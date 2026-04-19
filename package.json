@@ -1,0 +1,61 @@
+{
+  "name": "agwatch-cli",
+  "version": "1.0.0",
+  "description": "Terminal analytics CLI for AI coding agents, usage, costs, tokens, and providers",
+  "type": "module",
+  "bin": "dist/cli/index.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist/",
+    "package.json",
+    "README.md",
+    "LICENSE",
+    "screenshot.png"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/cli/index.js",
+    "lint": "tsc --noEmit",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "ai",
+    "cli",
+    "dashboard",
+    "analytics",
+    "tokens",
+    "costs",
+    "opencode",
+    "claude-code",
+    "terminal"
+  ],
+  "author": "M0H4M3D",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/M0H4M3D-D3V/agwatch-cli.git"
+  },
+  "homepage": "https://github.com/M0H4M3D-D3V/agwatch-cli#readme",
+  "bugs": {
+    "url": "https://github.com/M0H4M3D-D3V/agwatch-cli/issues"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^12.9.0",
+    "commander": "^14.0.3",
+    "dayjs": "^1.11.20",
+    "ink": "^7.0.0",
+    "react": "^19.2.5",
+    "sql.js": "^1.14.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^25.6.0",
+    "@types/react": "^19.2.14",
+    "@types/sql.js": "^1.4.11",
+    "typescript": "^6.0.2"
+  }
+}
