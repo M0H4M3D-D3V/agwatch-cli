@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+import { spawn } from 'node:child_process';
 import { getProviderCookiesDir, getProviderCookiesPath } from '../utils/paths.js';
 
 const COOKIES_DIR = getProviderCookiesDir();
@@ -144,6 +145,70 @@ async function getChromiumExecutablePath(): Promise<string | undefined> {
   return undefined;
 }
 
+// Recursively search a directory for a Chrome/Chromium executable.
+// Used as a fallback when puppeteer.executablePath() returns a path that doesn't exist
+// (e.g. puppeteer installed but its Chrome download silently failed).
+function searchForExecutable(dir: string, names: Set<string>, maxDepth: number): string | undefined {
+  if (maxDepth <= 0 || !fs.existsSync(dir)) return undefined;
+  try {
+    for (const entry of fs.readdirSync(dir)) {
+      const full = path.join(dir, entry);
+      if (names.has(entry)) {
+        try {
+          const stat = fs.statSync(full);
+          if (!stat.isDirectory()) {
+            fs.accessSync(full, fs.constants.X_OK);
+            return full;
+          }
+        } catch { /* not executable */ }
+      }
+      try {
+        if (fs.statSync(full).isDirectory()) {
+          const found = searchForExecutable(full, names, maxDepth - 1);
+          if (found) return found;
+        }
+      } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+  return undefined;
+}
+
+function findChromiumInCache(): string | undefined {
+  const cacheDir = path.join(os.homedir(), '.cache', 'puppeteer');
+  const names = new Set(
+    process.platform === 'darwin'
+      ? ['Google Chrome for Testing', 'Google Chrome', 'Chromium', 'chromium', 'chrome']
+      : ['chrome', 'chromium', 'google-chrome', 'google-chrome-stable'],
+  );
+  return searchForExecutable(cacheDir, names, 10);
+}
+
+// Run puppeteer's own browser-install CLI to force a Chrome download.
+// This is a second attempt in case the npm postinstall script didn't complete the download.
+async function runPuppeteerBrowserInstall(onStatus?: (msg: string) => void): Promise<void> {
+  try {
+    const { fileURLToPath } = await import('node:url');
+    const here = fileURLToPath(import.meta.url);
+    const toolDir = path.resolve(path.dirname(here), '..', '..');
+    const puppeteerBin = path.join(toolDir, 'node_modules', '.bin', 'puppeteer');
+    if (!fs.existsSync(puppeteerBin)) return;
+
+    onStatus?.('Running puppeteer browser install...');
+    await new Promise<void>((resolve) => {
+      const child = spawn(process.execPath, [puppeteerBin, 'browsers', 'install', 'chrome'], {
+        env: { ...process.env },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      child.stdout?.on('data', (d: Buffer) => {
+        const line = d.toString().trim();
+        if (line) onStatus?.(line);
+      });
+      child.on('close', () => resolve());
+      child.on('error', () => resolve());
+    });
+  } catch { /* ignore */ }
+}
+
 async function launchBrowser(headless: boolean, onStatus?: (msg: string) => void): Promise<any> {
   const puppeteerExtra = (await import('puppeteer-extra')).default as any;
   if (!_stealthPluginRegistered) {
@@ -169,7 +234,7 @@ async function launchBrowser(headless: boolean, onStatus?: (msg: string) => void
   }
 
   // macOS / Linux: try puppeteer's channel-based detection first (instant if Chrome is installed).
-  const channels = ['chrome', 'chromium', 'chrome-canary'];
+  const channels = ['chrome', 'chromium', 'chrome-canary'] as const;
   for (const channel of channels) {
     try {
       return await puppeteerExtra.launch({ headless, args, defaultViewport: null, channel });
@@ -178,23 +243,35 @@ async function launchBrowser(headless: boolean, onStatus?: (msg: string) => void
     }
   }
 
-  // Still nothing — automatically download Chromium via puppeteer so the user doesn't have to.
-  onStatus?.('No browser found. Downloading Chromium (one-time setup, may take a minute)...');
+  // Still nothing — automatically install puppeteer + download Chromium.
+  onStatus?.('No browser found. Downloading Chromium (one-time, may take a minute)...');
   try {
     const { installPuppeteer } = await import('./deps.js');
-    await installPuppeteer();
-    executablePath = await getChromiumExecutablePath();
-  } catch {
-    // download failed — fall through to final error
-  }
+    const installed = await installPuppeteer();
+    if (installed) {
+      // puppeteer's npm postinstall downloads Chrome, but it can silently fail.
+      // Run the puppeteer browser-install CLI as a second explicit download attempt.
+      await runPuppeteerBrowserInstall(onStatus);
+    }
+  } catch { /* ignore install errors — still try to find Chrome below */ }
+
+  // After the install attempt, try every detection path including the cache search.
+  executablePath = (await getChromiumExecutablePath()) ?? findChromiumInCache();
 
   if (executablePath) {
     onStatus?.('Browser ready.');
     return puppeteerExtra.launch({ headless, args, defaultViewport: null, executablePath });
   }
 
+  // Last resort: channel detection again (in case the install added Chrome to a known location).
+  for (const channel of channels) {
+    try {
+      return await puppeteerExtra.launch({ headless, args, defaultViewport: null, channel });
+    } catch { /* try next */ }
+  }
+
   throw new Error(
-    'Could not find or download a browser. Set PUPPETEER_EXECUTABLE_PATH to your Chrome binary and try again.',
+    'Could not find or download a browser. Install Google Chrome, or set PUPPETEER_EXECUTABLE_PATH to your browser binary.',
   );
 }
 
