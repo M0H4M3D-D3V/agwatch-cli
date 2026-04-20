@@ -1046,8 +1046,8 @@ function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refres
     const aIdx = agents.findIndex(a => a.id === activeAgent);
     if (key.upArrow) {
       switchPeriod(PERIODS[(pIdx - 1 + PERIODS.length) % PERIODS.length]);
-    } else if (key.downArrow || key.tab) {
-      if (key.downArrow) switchPeriod(PERIODS[(pIdx + 1) % PERIODS.length]);
+    } else if (key.downArrow) {
+      switchPeriod(PERIODS[(pIdx + 1) % PERIODS.length]);
     } else if (key.leftArrow) {
       const next = agents[(aIdx - 1 + agents.length) % agents.length];
       setActiveAgent(next.id);
@@ -1134,7 +1134,9 @@ function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refres
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
 const MIN_DASHBOARD_HEIGHT = 30;
+const TARGET_DASHBOARD_WIDTH = 170;
 let lastAppliedHeight: number | null = null;
+let lastAppliedWidth: number | null = null;
 let inAltScreen = false;
 
 function getMaxDashboardHeight(): number {
@@ -1147,7 +1149,19 @@ function supportsXTWINOPS(): boolean {
   return true;
 }
 
+function enableMouseScrollFilter(): void {
+  // Enable mouse button reporting + SGR coords so wheel events arrive as
+  // \x1b[<64;...M sequences instead of arrow keys — Ink ignores these,
+  // so scroll no longer triggers period switching.
+  process.stdout.write('\x1b[?1000h\x1b[?1006h');
+}
+
+function disableMouseScrollFilter(): void {
+  process.stdout.write('\x1b[?1000l\x1b[?1006l');
+}
+
 function restoreTerminal(): void {
+  disableMouseScrollFilter();
   if (inAltScreen) {
     process.stdout.write('\x1b[?1049l');
     inAltScreen = false;
@@ -1199,19 +1213,19 @@ function desiredDashboardHeight(data: DashboardData, providerCount: number): num
   return Math.min(getMaxDashboardHeight(), Math.max(MIN_DASHBOARD_HEIGHT, content));
 }
 
-function resizeTerminalTo(height: number): void {
-  if (lastAppliedHeight === height) return;
+function resizeTerminalTo(height: number, width: number): void {
+  if (lastAppliedHeight === height && lastAppliedWidth === width) return;
   if (!supportsXTWINOPS()) return;
   // When shrinking, Windows Terminal sometimes gives one fewer usable row than
   // requested in the alt screen buffer; +1 compensates so all content rows fit.
   const isShrinking = lastAppliedHeight !== null && height < lastAppliedHeight;
-  const w = process.stdout.columns || 120;
-  process.stdout.write(`\x1b[8;${isShrinking ? height + 1 : height};${w}t`);
+  process.stdout.write(`\x1b[8;${isShrinking ? height + 1 : height};${width}t`);
   lastAppliedHeight = height;
+  lastAppliedWidth = width;
 }
 
 function resizeTerminalForData(data: DashboardData, providerCount: number): void {
-  resizeTerminalTo(desiredDashboardHeight(data, providerCount));
+  resizeTerminalTo(desiredDashboardHeight(data, providerCount), TARGET_DASHBOARD_WIDTH);
 }
 
 export async function runInkDashboard(
@@ -1242,6 +1256,7 @@ export async function runInkDashboard(
         };
       });
       resizeTerminalForData(data, providerData.length);
+      enableMouseScrollFilter();
       // Enter the alternate screen buffer: no scrollback, content is always
       // anchored to row 1 so PeriodTabs can never drift into the scroll area.
       out.write('\x1b[?1049h\x1b[2J\x1b[H');
@@ -1256,6 +1271,7 @@ export async function runInkDashboard(
         />
       );
       await waitUntilExit();
+      disableMouseScrollFilter();
       // Return to primary screen buffer.
       out.write('\x1b[?1049l');
       inAltScreen = false;

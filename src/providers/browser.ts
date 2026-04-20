@@ -3,6 +3,10 @@ import fs from 'node:fs';
 import { getProviderCookiesDir, getProviderCookiesPath } from '../utils/paths.js';
 
 const COOKIES_DIR = getProviderCookiesDir();
+const VISIBLE_WINDOW_WIDTH = 1600;
+const VISIBLE_WINDOW_HEIGHT = 1000;
+const VISIBLE_PAGE_ZOOM = '70%';
+const VISIBLE_BASE_FONT_SIZE = '14px';
 
 function cookiesPath(providerId: string): string {
   return getProviderCookiesPath(providerId);
@@ -90,12 +94,44 @@ async function launchBrowser(headless: boolean): Promise<any> {
   if (process.platform === 'linux') {
     args.push('--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage');
   }
+  if (!headless) {
+    args.push(`--window-size=${VISIBLE_WINDOW_WIDTH},${VISIBLE_WINDOW_HEIGHT}`);
+  }
 
   return puppeteerExtra.launch({
     headless,
     args,
     defaultViewport: null,
   });
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function configureVisiblePage(page: any): Promise<void> {
+  try {
+    await page.evaluateOnNewDocument((zoom: string, fontSize: string) => {
+      const apply = () => {
+        const root = document.documentElement;
+        if (!root) return;
+        root.style.zoom = zoom;
+        root.style.fontSize = fontSize;
+      };
+
+      apply();
+      document.addEventListener('DOMContentLoaded', apply, { once: false });
+    }, VISIBLE_PAGE_ZOOM, VISIBLE_BASE_FONT_SIZE);
+
+    const session = await page.target().createCDPSession();
+    const { windowId } = await session.send('Browser.getWindowForTarget');
+    await session.send('Browser.setWindowBounds', {
+      windowId,
+      bounds: {
+        width: VISIBLE_WINDOW_WIDTH,
+        height: VISIBLE_WINDOW_HEIGHT,
+      },
+    });
+  } catch {
+    // ignore browser-specific window management failures
+  }
 }
 
 async function getScrapeBrowser(): Promise<any> {
@@ -126,6 +162,8 @@ async function getAuthBrowser(): Promise<any> {
   _authBrowserLaunchPromise = launchBrowser(false);
   try {
     _authBrowser = await _authBrowserLaunchPromise;
+    const pages = await _authBrowser.pages();
+    await Promise.all(pages.map((page: any) => configureVisiblePage(page)));
   } finally {
     _authBrowserLaunchPromise = null;
   }
@@ -223,6 +261,7 @@ export async function authenticate(
   onStatus?.('Browser opened. Please log in...');
 
   const page = (await browser.pages())[0] || await browser.newPage();
+  await configureVisiblePage(page);
 
   try {
     const cookiesFile = cookiesPath(providerId);
@@ -295,6 +334,7 @@ export async function authenticate(
         verified = false;
         try {
           const verifyPage = await browser.newPage();
+          await configureVisiblePage(verifyPage);
           await verifyPage.setCookie(...cookies);
           await verifyPage.goto(verifyUrl, { waitUntil: 'networkidle2', timeout: 60_000 });
 
@@ -396,6 +436,7 @@ export async function scrapePageHtml(
 export async function getScrapedPage(providerId: string, url: string, headless: boolean = true): Promise<any> {
   const browser = headless ? await getScrapeBrowser() : await getAuthBrowser();
   const page = await browser.newPage();
+  if (!headless) await configureVisiblePage(page);
 
   const cookiesFile = cookiesPath(providerId);
   if (fs.existsSync(cookiesFile)) {
@@ -413,6 +454,7 @@ export async function getScrapedPage(providerId: string, url: string, headless: 
 export async function getPreparedPage(providerId: string, headless: boolean = true): Promise<any> {
   const browser = headless ? await getScrapeBrowser() : await getAuthBrowser();
   const page = await browser.newPage();
+  if (!headless) await configureVisiblePage(page);
 
   const cookiesFile = cookiesPath(providerId);
   if (fs.existsSync(cookiesFile)) {
