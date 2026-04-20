@@ -66,6 +66,8 @@ For each provider, `agwatch` shows:
 - `5h` reset time/date
 - Current weekly usage percentage
 - Weekly reset time/date
+- Current monthly usage percentage (when available)
+- Monthly reset time/date (when available)
 - Provider-specific error state when usage could not be fetched
 
 Supported providers currently include:
@@ -73,6 +75,7 @@ Supported providers currently include:
 - `OpenAI`
 - `Anthropic`
 - `Z.AI`
+- `OpenCode Go`
 
 ## Installation
 
@@ -183,7 +186,7 @@ agwatch summary --json
 | Panel | What it shows |
 |---|---|
 | `Overview` | Total cost, calls, sessions, cache hit rate, and token totals |
-| `Providers` | Provider usage percentages, reset windows, scrape source, and provider errors |
+| `Providers` | Provider usage percentages, reset windows (5h, weekly, monthly when available), scrape source, and provider errors |
 | `By Project` | Cost, tokens, and sessions grouped by project |
 | `By Model` | Cost, tokens, and calls grouped by model |
 | `By Activity` | Cost and calls grouped by inferred workflow type such as coding, debugging, or testing |

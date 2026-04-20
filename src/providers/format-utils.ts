@@ -10,6 +10,6 @@ export function formatDateShort(d: Date): string {
   const h24 = d.getHours();
   const mi = String(d.getMinutes()).padStart(2, '0');
   const ampm = h24 >= 12 ? 'PM' : 'AM';
-  const h12 = (h24 % 12) || 12;
+  const h12 = String((h24 % 12) || 12).padStart(2, ' ');
   return `${day} ${dd} ${month} · ${h12}:${mi} ${ampm}`;
 }
