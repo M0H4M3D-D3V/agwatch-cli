@@ -1,4 +1,3 @@
-import { createRequire } from 'node:module';
 import type { TimeRangeFilter, UsageEvent } from '../../domain/types.js';
 import { SqliteReaderFallback } from './sqlite-reader-fallback.js';
 import { JsonReader } from './json-reader.js';
@@ -6,20 +5,6 @@ import { mapToUsageEvents, initPricing } from './mapper.js';
 import type { AgentConfig } from '../../config/agents.js';
 import { resolveAgentPaths } from '../../config/agents.js';
 import { findOpenCodeDbPath } from './paths.js';
-
-const _require = createRequire(import.meta.url);
-let nativeSqliteAvailable: boolean | null = null;
-
-function checkNativeSqlite(): boolean {
-  if (nativeSqliteAvailable !== null) return nativeSqliteAvailable;
-  try {
-    _require.resolve('better-sqlite3');
-    nativeSqliteAvailable = true;
-  } catch {
-    nativeSqliteAvailable = false;
-  }
-  return nativeSqliteAvailable;
-}
 
 export class OpenCodeAdapter {
   private source: 'sqlite' | 'json' | null = null;
@@ -40,15 +25,6 @@ export class OpenCodeAdapter {
     await initPricing();
 
     for (const dbPath of this.dbPaths) {
-      if (checkNativeSqlite()) {
-        try {
-          const result = await this.tryNativeSqlite(dbPath, range);
-          if (result) return result;
-        } catch {
-          nativeSqliteAvailable = false;
-        }
-      }
-
       try {
         const result = await this.tryFallbackSqlite(dbPath, range);
         if (result) return result;
@@ -58,25 +34,6 @@ export class OpenCodeAdapter {
     }
 
     return [];
-  }
-
-  private async tryNativeSqlite(dbPath: string, range: TimeRangeFilter): Promise<UsageEvent[] | null> {
-    // Dynamically imported so the module is never evaluated when better-sqlite3 is absent.
-    const { SqliteReader } = await import('./sqlite-reader.js');
-    const sqliteReader = new SqliteReader();
-    const db = sqliteReader.open(dbPath);
-    if (!db) return null;
-    this.source = 'sqlite';
-    try {
-      const sessions = sqliteReader.getSessions(range);
-      const sessionIds = sessions.map((s) => s.id);
-      const messages = sqliteReader.getMessages(sessionIds, range);
-      const messageIds = messages.map((m) => m.id);
-      const parts = sqliteReader.getParts(messageIds);
-      return mapToUsageEvents(sessions, messages, parts);
-    } finally {
-      sqliteReader.close();
-    }
   }
 
   private async tryFallbackSqlite(dbPath: string, range: TimeRangeFilter): Promise<UsageEvent[] | null> {
