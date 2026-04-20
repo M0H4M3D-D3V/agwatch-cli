@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 import { getProviderCookiesDir, getProviderCookiesPath } from '../utils/paths.js';
 
 const COOKIES_DIR = getProviderCookiesDir();
@@ -83,10 +84,14 @@ function canOpenVisibleBrowser(): boolean {
 }
 
 async function getChromiumExecutablePath(): Promise<string | undefined> {
-  // On Windows, puppeteer-extra can auto-detect Chrome; skip explicit path.
+  // Windows: let puppeteer-extra auto-detect; no explicit path needed.
   if (process.platform === 'win32') return undefined;
 
-  // Try to get the bundled Chromium path from the installed full `puppeteer` package.
+  // Respect an explicit override from the environment.
+  const envPath = process.env.PUPPETEER_EXECUTABLE_PATH || process.env.CHROME_PATH;
+  if (envPath && fs.existsSync(envPath)) return envPath;
+
+  // Try bundled Chromium from the installed full `puppeteer` package.
   try {
     const puppeteer = (await import('puppeteer')) as any;
     const execPath =
@@ -97,18 +102,30 @@ async function getChromiumExecutablePath(): Promise<string | undefined> {
         : undefined;
     if (execPath && fs.existsSync(execPath)) return execPath;
   } catch {
-    // puppeteer not installed or no bundled browser — fall through to system Chrome
+    // puppeteer not installed or browser not yet downloaded
   }
 
-  // Fall back to system-installed Chrome/Chromium.
+  // Known system Chrome/Chromium paths.
+  const home = os.homedir();
   const systemPaths: string[] =
     process.platform === 'darwin'
       ? [
+          // System-wide installs (most common)
           '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
           '/Applications/Chromium.app/Contents/MacOS/Chromium',
           '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
-          '/usr/bin/google-chrome',
-          '/usr/bin/chromium',
+          '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
+          '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+          // Per-user installs (drag-and-drop to ~/Applications)
+          `${home}/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`,
+          `${home}/Applications/Chromium.app/Contents/MacOS/Chromium`,
+          `${home}/Applications/Brave Browser.app/Contents/MacOS/Brave Browser`,
+          // Homebrew (Apple Silicon)
+          '/opt/homebrew/bin/chromium',
+          '/opt/homebrew/bin/google-chrome',
+          // Homebrew (Intel)
+          '/usr/local/bin/chromium',
+          '/usr/local/bin/google-chrome',
         ]
       : [
           '/usr/bin/google-chrome',
@@ -117,6 +134,7 @@ async function getChromiumExecutablePath(): Promise<string | undefined> {
           '/usr/bin/chromium',
           '/snap/bin/chromium',
           '/usr/bin/brave-browser',
+          '/usr/bin/microsoft-edge',
         ];
 
   for (const p of systemPaths) {
@@ -126,7 +144,7 @@ async function getChromiumExecutablePath(): Promise<string | undefined> {
   return undefined;
 }
 
-async function launchBrowser(headless: boolean): Promise<any> {
+async function launchBrowser(headless: boolean, onStatus?: (msg: string) => void): Promise<any> {
   const puppeteerExtra = (await import('puppeteer-extra')).default as any;
   if (!_stealthPluginRegistered) {
     const StealthPlugin = (await import('puppeteer-extra-plugin-stealth')).default as any;
@@ -139,20 +157,45 @@ async function launchBrowser(headless: boolean): Promise<any> {
     args.push('--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage');
   }
 
-  const executablePath = await getChromiumExecutablePath();
+  let executablePath = await getChromiumExecutablePath();
 
-  if (!executablePath && process.platform !== 'win32') {
-    throw new Error(
-      'Chrome or Chromium not found. Install Google Chrome, or run `agwatch providers install` to download a bundled browser.',
-    );
+  if (executablePath) {
+    return puppeteerExtra.launch({ headless, args, defaultViewport: null, executablePath });
   }
 
-  return puppeteerExtra.launch({
-    headless,
-    args,
-    defaultViewport: null,
-    ...(executablePath ? { executablePath } : {}),
-  });
+  // Windows: rely on puppeteer-extra's built-in detection.
+  if (process.platform === 'win32') {
+    return puppeteerExtra.launch({ headless, args, defaultViewport: null });
+  }
+
+  // macOS / Linux: try puppeteer's channel-based detection first (instant if Chrome is installed).
+  const channels = ['chrome', 'chromium', 'chrome-canary'];
+  for (const channel of channels) {
+    try {
+      return await puppeteerExtra.launch({ headless, args, defaultViewport: null, channel });
+    } catch {
+      // try next channel
+    }
+  }
+
+  // Still nothing — automatically download Chromium via puppeteer so the user doesn't have to.
+  onStatus?.('No browser found. Downloading Chromium (one-time setup, may take a minute)...');
+  try {
+    const { installPuppeteer } = await import('./deps.js');
+    await installPuppeteer();
+    executablePath = await getChromiumExecutablePath();
+  } catch {
+    // download failed — fall through to final error
+  }
+
+  if (executablePath) {
+    onStatus?.('Browser ready.');
+    return puppeteerExtra.launch({ headless, args, defaultViewport: null, executablePath });
+  }
+
+  throw new Error(
+    'Could not find or download a browser. Set PUPPETEER_EXECUTABLE_PATH to your Chrome binary and try again.',
+  );
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -177,7 +220,7 @@ async function getScrapeBrowser(): Promise<any> {
   return _scrapeBrowser;
 }
 
-async function getAuthBrowser(): Promise<any> {
+async function getAuthBrowser(onStatus?: (msg: string) => void): Promise<any> {
   if (_authBrowser && _authBrowser.connected) return _authBrowser;
 
   if (_authBrowserLaunchPromise) {
@@ -185,7 +228,7 @@ async function getAuthBrowser(): Promise<any> {
     return _authBrowser;
   }
 
-  _authBrowserLaunchPromise = launchBrowser(false);
+  _authBrowserLaunchPromise = launchBrowser(false, onStatus);
   try {
     _authBrowser = await _authBrowserLaunchPromise;
     const pages = await _authBrowser.pages();
@@ -283,7 +326,7 @@ export async function authenticate(
     return false;
   }
 
-  const browser = await getAuthBrowser();
+  const browser = await getAuthBrowser(onStatus);
   onStatus?.('Browser opened. Please log in...');
 
   const page = (await browser.pages())[0] || await browser.newPage();
