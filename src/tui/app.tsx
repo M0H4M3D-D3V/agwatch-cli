@@ -570,7 +570,9 @@ function ProvidersPanel({ width, providers, loading, loadingText, spinner, statu
     const cw = i === N_COLS - 1 ? lastColW : baseColW;
     const d5h = colData(p.sessionUsedPct, cw);
     const dWk = colData(p.weeklyUsedPct, cw);
-    return { p, cw, ...d5h, segsWk: dWk.segs };
+    const hasMo = p.monthlyUsedPct != null;
+    const dMo = colData(hasMo ? p.monthlyUsedPct! : 0, cw);
+    return { p, cw, ...d5h, segsWk: dWk.segs, segsMo: dMo.segs, hasMo };
   });
 
   function BarRow({ segs, label, pct, reset }: {
@@ -586,7 +588,7 @@ function ProvidersPanel({ width, providers, loading, loadingText, spinner, statu
         <Text>{' '.repeat(BAR_PCT_GAP_W)}</Text>
         <Text color={C.white}>{fitR(pct + '%', PCT_W)}</Text>
         <Text>{' '.repeat(GAP_W)}</Text>
-        <Text color={C.subtle}>{fitR(reset, RESET_W)}</Text>
+        <Text color={C.subtle}>{fitL(reset, RESET_W)}</Text>
       </Box>
     );
   }
@@ -651,6 +653,11 @@ function ProvidersPanel({ width, providers, loading, loadingText, spinner, statu
       })()}
       <FullRow renderCell={(item) => <BarRow segs={item.segs} label="5h" pct={item.p.sessionUsedPct} reset={item.p.sessionResetDate} />} />
       <FullRow renderCell={(item) => <BarRow segs={item.segsWk} label="Wk" pct={item.p.weeklyUsedPct} reset={item.p.weeklyResetDate} />} />
+      <FullRow renderCell={(item) =>
+        item.hasMo
+          ? <BarRow segs={item.segsMo} label="Mo" pct={item.p.monthlyUsedPct!} reset={item.p.monthlyResetDate!} />
+          : <Box width={item.cw} />
+      } />
     </Box>
   );
 }
@@ -1134,10 +1141,9 @@ function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refres
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
 const MIN_DASHBOARD_HEIGHT = 30;
-const TARGET_DASHBOARD_WIDTH = 170;
+const TARGET_DASHBOARD_WIDTH = 180;
 let lastAppliedHeight: number | null = null;
 let lastAppliedWidth: number | null = null;
-let inAltScreen = false;
 
 function getMaxDashboardHeight(): number {
   return Math.max(60, Math.floor((process.stdout.rows || 50) * 0.9));
@@ -1149,23 +1155,7 @@ function supportsXTWINOPS(): boolean {
   return true;
 }
 
-function enableMouseScrollFilter(): void {
-  // Enable mouse button reporting + SGR coords so wheel events arrive as
-  // \x1b[<64;...M sequences instead of arrow keys — Ink ignores these,
-  // so scroll no longer triggers period switching.
-  process.stdout.write('\x1b[?1000h\x1b[?1006h');
-}
-
-function disableMouseScrollFilter(): void {
-  process.stdout.write('\x1b[?1000l\x1b[?1006l');
-}
-
 function restoreTerminal(): void {
-  disableMouseScrollFilter();
-  if (inAltScreen) {
-    process.stdout.write('\x1b[?1049l');
-    inAltScreen = false;
-  }
 }
 
 process.on('exit', restoreTerminal);
@@ -1191,8 +1181,8 @@ function desiredDashboardHeight(data: DashboardData, providerCount: number): num
 
   // Overview: 2 borders + title + 2 metric rows.
   const overview = 5;
-  // Providers panel: 2 borders + title + names row + 2 bar rows (or + placeholder line).
-  const providers = providerCount > 0 ? 6 : 4;
+  // Providers panel: 2 borders + title + names row + 3 bar rows (5h, Wk, Mo).
+  const providers = providerCount > 0 ? 7 : 4;
 
   const topRow = Math.max(
     tablePanelHeight(data.byProject.length, 12),
@@ -1244,7 +1234,7 @@ export async function runInkDashboard(
       const enabledProviders = (config.providers ?? []).filter((p) => p.enabled);
       const providerData: ProviderUsageData[] = enabledProviders.map((p) => {
         const def = SUPPORTED_PROVIDERS.find((sp) => sp.id === p.id);
-        return {
+        const base: ProviderUsageData = {
           providerId: p.id,
           providerLabel: p.label || def?.label || p.id,
           color: def?.color ?? C.subtle,
@@ -1254,13 +1244,13 @@ export async function runInkDashboard(
           weeklyResetDate: '--',
           scrapedAt: 0,
         };
+        if (p.id === 'opencodego') {
+          base.monthlyUsedPct = 0;
+          base.monthlyResetDate = '--';
+        }
+        return base;
       });
       resizeTerminalForData(data, providerData.length);
-      enableMouseScrollFilter();
-      // Enter the alternate screen buffer: no scrollback, content is always
-      // anchored to row 1 so PeriodTabs can never drift into the scroll area.
-      out.write('\x1b[?1049h\x1b[2J\x1b[H');
-      inAltScreen = true;
       const { waitUntilExit } = render(
         <InteractiveDashboard
           initialData={data}
@@ -1271,10 +1261,6 @@ export async function runInkDashboard(
         />
       );
       await waitUntilExit();
-      disableMouseScrollFilter();
-      // Return to primary screen buffer.
-      out.write('\x1b[?1049l');
-      inAltScreen = false;
     } else {
       const providerData = await refreshProvidersBackgroundOnly();
       const L = computeLayout(Number(process.env['COLUMNS'] ?? 80));

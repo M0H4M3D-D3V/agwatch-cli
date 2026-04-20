@@ -2,6 +2,7 @@ import type { ProviderUsageData } from './types.js';
 import type { ProviderSession } from './session.js';
 import { httpRequest } from './http-client.js';
 import { ProviderScrapeError } from './errors.js';
+import { CHROME_UA } from './constants.js';
 import { clampPct, formatDateShort } from './format-utils.js';
 
 type ZaiLoginResponse = {
@@ -43,7 +44,7 @@ export async function fetchZAIUsageApi(session: ProviderSession, timeoutMs: numb
       'content-type': 'application/json',
       'origin': 'https://z.ai',
       'referer': 'https://z.ai/manage-apikey/subscription',
-      'user-agent': 'Mozilla/5.0',
+      'user-agent': CHROME_UA,
     },
     body: JSON.stringify({ token: chatToken }),
   });
@@ -65,7 +66,7 @@ export async function fetchZAIUsageApi(session: ProviderSession, timeoutMs: numb
       'authorization': `Bearer ${accessToken}`,
       'origin': 'https://z.ai',
       'referer': 'https://z.ai/manage-apikey/subscription',
-      'user-agent': 'Mozilla/5.0',
+      'user-agent': CHROME_UA,
     },
   });
 

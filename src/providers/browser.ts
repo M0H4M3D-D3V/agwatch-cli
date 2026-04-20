@@ -228,12 +228,15 @@ async function launchBrowser(headless: boolean, onStatus?: (msg: string) => void
     return puppeteerExtra.launch({ headless, args, defaultViewport: null, executablePath });
   }
 
-  // Windows: rely on puppeteer-extra's built-in detection.
+  // Try puppeteer-extra's built-in detection (works on Windows when Chrome is in Program Files,
+  // and may work on macOS/Linux too). On failure, fall through to auto-download.
   if (process.platform === 'win32') {
-    return puppeteerExtra.launch({ headless, args, defaultViewport: null });
+    try {
+      return await puppeteerExtra.launch({ headless, args, defaultViewport: null });
+    } catch { /* Chrome not found — fall through to auto-download */ }
   }
 
-  // macOS / Linux: try puppeteer's channel-based detection first (instant if Chrome is installed).
+  // macOS / Linux: try channel-based detection first (instant if Chrome is installed).
   const channels = ['chrome', 'chromium', 'chrome-canary'] as const;
   for (const channel of channels) {
     try {

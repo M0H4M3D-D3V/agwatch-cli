@@ -6,6 +6,8 @@ export type ProviderUsageData = {
   weeklyUsedPct: number;
   sessionResetDate: string;
   weeklyResetDate: string;
+  monthlyUsedPct?: number;
+  monthlyResetDate?: string;
   scrapedAt: number;
   error?: string;
   errorCode?:

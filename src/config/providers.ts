@@ -32,6 +32,14 @@ export const SUPPORTED_PROVIDERS: SupportedProvider[] = [
     authSuccessPattern: 'z.ai/',
     usageUrl: 'https://z.ai/manage-apikey/subscription',
   },
+  {
+    id: 'opencodego',
+    label: 'OpenCode Go',
+    color: '#FF8C42',
+    authUrl: 'https://opencode.ai/auth',
+    authSuccessPattern: 'opencode.ai/',
+    usageUrl: 'https://opencode.ai/go',
+  },
 ];
 
 export function getSupportedProvider(id: string): SupportedProvider | undefined {
