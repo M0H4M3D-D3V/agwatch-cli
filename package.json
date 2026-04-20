@@ -1,6 +1,6 @@
 {
   "name": "agwatch-cli",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Terminal analytics CLI for AI coding agents, usage, costs, tokens, and providers",
   "type": "module",
   "bin": {
@@ -45,13 +45,15 @@
   },
   "license": "MIT",
   "dependencies": {
-    "better-sqlite3": "^12.9.0",
     "commander": "^14.0.3",
     "dayjs": "^1.11.20",
     "ink": "^7.0.0",
     "react": "^19.2.5",
     "sql.js": "^1.14.1",
     "zod": "^4.3.6"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^12.9.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

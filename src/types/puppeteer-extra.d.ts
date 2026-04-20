@@ -1,8 +1,17 @@
+declare module 'puppeteer' {
+  const _default: {
+    executablePath(): string;
+    launch(options?: any): Promise<any>;
+    [key: string]: any;
+  };
+  export default _default;
+  export function executablePath(): string;
+}
+
 declare module 'puppeteer-extra' {
-  import type { BrowserLaunchArgumentOptions, LaunchOptions, BrowserConnectOptions } from 'puppeteer';
   const _default: {
     use(plugin: any): typeof _default;
-    launch(options?: LaunchOptions & BrowserLaunchArgumentOptions & BrowserConnectOptions): Promise<any>;
+    launch(options?: any): Promise<any>;
   };
   export default _default;
 }

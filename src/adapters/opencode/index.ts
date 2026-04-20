@@ -1,5 +1,5 @@
+import { createRequire } from 'node:module';
 import type { TimeRangeFilter, UsageEvent } from '../../domain/types.js';
-import { SqliteReader } from './sqlite-reader.js';
 import { SqliteReaderFallback } from './sqlite-reader-fallback.js';
 import { JsonReader } from './json-reader.js';
 import { mapToUsageEvents, initPricing } from './mapper.js';
@@ -7,12 +7,13 @@ import type { AgentConfig } from '../../config/agents.js';
 import { resolveAgentPaths } from '../../config/agents.js';
 import { findOpenCodeDbPath } from './paths.js';
 
+const _require = createRequire(import.meta.url);
 let nativeSqliteAvailable: boolean | null = null;
 
 function checkNativeSqlite(): boolean {
   if (nativeSqliteAvailable !== null) return nativeSqliteAvailable;
   try {
-    require.resolve('better-sqlite3');
+    _require.resolve('better-sqlite3');
     nativeSqliteAvailable = true;
   } catch {
     nativeSqliteAvailable = false;
@@ -59,7 +60,9 @@ export class OpenCodeAdapter {
     return [];
   }
 
-  private tryNativeSqlite(dbPath: string, range: TimeRangeFilter): UsageEvent[] | null {
+  private async tryNativeSqlite(dbPath: string, range: TimeRangeFilter): Promise<UsageEvent[] | null> {
+    // Dynamically imported so the module is never evaluated when better-sqlite3 is absent.
+    const { SqliteReader } = await import('./sqlite-reader.js');
     const sqliteReader = new SqliteReader();
     const db = sqliteReader.open(dbPath);
     if (!db) return null;

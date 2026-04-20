@@ -3,10 +3,6 @@ import fs from 'node:fs';
 import { getProviderCookiesDir, getProviderCookiesPath } from '../utils/paths.js';
 
 const COOKIES_DIR = getProviderCookiesDir();
-const VISIBLE_WINDOW_WIDTH = 1600;
-const VISIBLE_WINDOW_HEIGHT = 1000;
-const VISIBLE_PAGE_ZOOM = '70%';
-const VISIBLE_BASE_FONT_SIZE = '14px';
 
 function cookiesPath(providerId: string): string {
   return getProviderCookiesPath(providerId);
@@ -31,6 +27,7 @@ let _scrapeBrowserLaunchPromise: Promise<any> | null = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _authBrowserLaunchPromise: Promise<any> | null = null;
 let _closingPromise: Promise<void> | null = null;
+let _stealthPluginRegistered = false;
 
 // In-memory cookie cache — avoids disk reads on every scrape
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -85,53 +82,82 @@ function canOpenVisibleBrowser(): boolean {
   return !!(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
 }
 
+async function getChromiumExecutablePath(): Promise<string | undefined> {
+  // On Windows, puppeteer-extra can auto-detect Chrome; skip explicit path.
+  if (process.platform === 'win32') return undefined;
+
+  // Try to get the bundled Chromium path from the installed full `puppeteer` package.
+  try {
+    const puppeteer = (await import('puppeteer')) as any;
+    const execPath =
+      typeof puppeteer?.default?.executablePath === 'function'
+        ? puppeteer.default.executablePath()
+        : typeof puppeteer?.executablePath === 'function'
+        ? puppeteer.executablePath()
+        : undefined;
+    if (execPath && fs.existsSync(execPath)) return execPath;
+  } catch {
+    // puppeteer not installed or no bundled browser — fall through to system Chrome
+  }
+
+  // Fall back to system-installed Chrome/Chromium.
+  const systemPaths: string[] =
+    process.platform === 'darwin'
+      ? [
+          '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+          '/Applications/Chromium.app/Contents/MacOS/Chromium',
+          '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
+          '/usr/bin/google-chrome',
+          '/usr/bin/chromium',
+        ]
+      : [
+          '/usr/bin/google-chrome',
+          '/usr/bin/google-chrome-stable',
+          '/usr/bin/chromium-browser',
+          '/usr/bin/chromium',
+          '/snap/bin/chromium',
+          '/usr/bin/brave-browser',
+        ];
+
+  for (const p of systemPaths) {
+    if (fs.existsSync(p)) return p;
+  }
+
+  return undefined;
+}
+
 async function launchBrowser(headless: boolean): Promise<any> {
   const puppeteerExtra = (await import('puppeteer-extra')).default as any;
-  const StealthPlugin = (await import('puppeteer-extra-plugin-stealth')).default as any;
-  puppeteerExtra.use(StealthPlugin());
+  if (!_stealthPluginRegistered) {
+    const StealthPlugin = (await import('puppeteer-extra-plugin-stealth')).default as any;
+    puppeteerExtra.use(StealthPlugin());
+    _stealthPluginRegistered = true;
+  }
 
   const args: string[] = [];
   if (process.platform === 'linux') {
     args.push('--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage');
   }
-  if (!headless) {
-    args.push(`--window-size=${VISIBLE_WINDOW_WIDTH},${VISIBLE_WINDOW_HEIGHT}`);
+
+  const executablePath = await getChromiumExecutablePath();
+
+  if (!executablePath && process.platform !== 'win32') {
+    throw new Error(
+      'Chrome or Chromium not found. Install Google Chrome, or run `agwatch providers install` to download a bundled browser.',
+    );
   }
 
   return puppeteerExtra.launch({
     headless,
     args,
     defaultViewport: null,
+    ...(executablePath ? { executablePath } : {}),
   });
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function configureVisiblePage(page: any): Promise<void> {
-  try {
-    await page.evaluateOnNewDocument((zoom: string, fontSize: string) => {
-      const apply = () => {
-        const root = document.documentElement;
-        if (!root) return;
-        root.style.zoom = zoom;
-        root.style.fontSize = fontSize;
-      };
-
-      apply();
-      document.addEventListener('DOMContentLoaded', apply, { once: false });
-    }, VISIBLE_PAGE_ZOOM, VISIBLE_BASE_FONT_SIZE);
-
-    const session = await page.target().createCDPSession();
-    const { windowId } = await session.send('Browser.getWindowForTarget');
-    await session.send('Browser.setWindowBounds', {
-      windowId,
-      bounds: {
-        width: VISIBLE_WINDOW_WIDTH,
-        height: VISIBLE_WINDOW_HEIGHT,
-      },
-    });
-  } catch {
-    // ignore browser-specific window management failures
-  }
+async function configureVisiblePage(_page: any): Promise<void> {
+  // No-op: auth browser opens at the OS default size with no zoom overrides.
 }
 
 async function getScrapeBrowser(): Promise<any> {
@@ -265,9 +291,15 @@ export async function authenticate(
 
   try {
     const cookiesFile = cookiesPath(providerId);
+
+    // Bug 3 fix: wrap cookie load so a malformed file returns false instead of throwing.
     if (fs.existsSync(cookiesFile)) {
-      const cookies = JSON.parse(fs.readFileSync(cookiesFile, 'utf-8'));
-      await page.setCookie(...cookies);
+      try {
+        const cookies = JSON.parse(fs.readFileSync(cookiesFile, 'utf-8'));
+        if (Array.isArray(cookies) && cookies.length > 0) await page.setCookie(...cookies);
+      } catch {
+        // Ignore corrupt cookies — user will log in fresh.
+      }
     }
 
     await page.goto(authUrl, { waitUntil: 'networkidle2', timeout: 120_000 });
@@ -279,25 +311,33 @@ export async function authenticate(
     let success = false;
 
     while (Date.now() - start < timeoutMs) {
-    const href = page.url().toLowerCase();
-    const hasPattern = href.includes(successPattern.toLowerCase());
-    const stillInAuthFlow =
-      href.includes('/auth') ||
-      href.includes('/login') ||
-      href.includes('/signin') ||
-      href.includes('/sign-in');
+      // Bug 4 fix: if the user closes the browser window, page.url() throws — treat as still waiting.
+      let href = '';
+      try {
+        href = page.url().toLowerCase();
+      } catch {
+        await new Promise((r) => setTimeout(r, pollMs));
+        continue;
+      }
 
-    const cookies = await page.cookies();
-    const hasSessionCookie = cookies.some((c: { name: string }) =>
-      /session|token|auth|next-auth/i.test(c.name),
-    );
-    const hasSolidSessionCookie = cookies.some((c: { name: string }) =>
-      /__secure-next-auth\.session-token|next-auth\.session-token|session-token/i.test(c.name),
-    );
+      const hasPattern = href.includes(successPattern.toLowerCase());
+      const stillInAuthFlow =
+        href.includes('/auth') ||
+        href.includes('/login') ||
+        href.includes('/signin') ||
+        href.includes('/sign-in');
 
-    const markers = await page.evaluate(() => {
-      const txt = (document.body?.innerText ?? '').toLowerCase();
-    const hasLoginMarkers =
+      const cookies = await page.cookies();
+      const hasSessionCookie = cookies.some((c: { name: string }) =>
+        /session|token|auth|next-auth/i.test(c.name),
+      );
+      const hasSolidSessionCookie = cookies.some((c: { name: string }) =>
+        /__secure-next-auth\.session-token|next-auth\.session-token|session-token/i.test(c.name),
+      );
+
+      const markers = await page.evaluate(() => {
+        const txt = (document.body?.innerText ?? '').toLowerCase();
+        const hasLoginMarkers =
           txt.includes('continue with google') ||
           txt.includes('continue with microsoft') ||
           txt.includes('continue with apple') ||
@@ -310,84 +350,87 @@ export async function authenticate(
           txt.includes('验证码') ||
           txt.includes('扫码登录') ||
           txt.includes('微信扫码');
-      const hasAppMarkers =
-        txt.includes('new chat') ||
-        txt.includes('settings') ||
-        txt.includes('projects') ||
-        txt.includes('codex') ||
-        txt.includes('workspace') ||
-        txt.includes('套餐') ||
-        txt.includes('用量') ||
-        txt.includes('控制台') ||
-        txt.includes('模型');
-      return { hasLoginMarkers, hasAppMarkers };
-    });
+        const hasAppMarkers =
+          txt.includes('new chat') ||
+          txt.includes('settings') ||
+          txt.includes('projects') ||
+          txt.includes('codex') ||
+          txt.includes('workspace') ||
+          txt.includes('套餐') ||
+          txt.includes('用量') ||
+          txt.includes('控制台') ||
+          txt.includes('模型');
+        return { hasLoginMarkers, hasAppMarkers };
+      });
 
-    // Candidate success: auth page left + session-like cookies.
-    const candidate = (hasPattern && !stillInAuthFlow && hasSessionCookie) || (hasSolidSessionCookie && !markers.hasLoginMarkers);
+      // Candidate success: auth page left + session-like cookies.
+      const candidate = (hasPattern && !stillInAuthFlow && hasSessionCookie) || (hasSolidSessionCookie && !markers.hasLoginMarkers);
 
-    if (candidate) {
-      let verified = true;
+      if (candidate) {
+        let verified = true;
 
-      // Strong verification: check protected usage page in a background tab.
-      if (verifyUrl) {
-        verified = false;
-        try {
-          const verifyPage = await browser.newPage();
-          await configureVisiblePage(verifyPage);
-          await verifyPage.setCookie(...cookies);
-          await verifyPage.goto(verifyUrl, { waitUntil: 'networkidle2', timeout: 60_000 });
-
-          const verifyHref = verifyPage.url().toLowerCase();
-          const redirectedToAuth =
-            verifyHref.includes('/auth') ||
-            verifyHref.includes('/login') ||
-            verifyHref.includes('/signin') ||
-            verifyHref.includes('/sign-in');
-
-          const verifyMarkers = await verifyPage.evaluate(() => {
-            const txt = (document.body?.innerText ?? '').toLowerCase();
-            const hasLoginMarkers =
-              txt.includes('continue with google') ||
-              txt.includes('continue with microsoft') ||
-              txt.includes('continue with apple') ||
-              txt.includes('log in') ||
-              txt.includes('sign in') ||
-              txt.includes('enter your email') ||
-              txt.includes('one-time password') ||
-              txt.includes('otp') ||
-              txt.includes('登录') ||
-              txt.includes('注册') ||
-              txt.includes('手机号') ||
-              txt.includes('验证码') ||
-              txt.includes('扫码登录') ||
-              txt.includes('微信扫码');
-            const hasUsageMarkers =
-              txt.includes('usage') ||
-              txt.includes('rate limit') ||
-              txt.includes('weekly') ||
-              txt.includes('5h') ||
-              txt.includes('codex') ||
-              txt.includes('用量') ||
-              txt.includes('额度') ||
-              txt.includes('套餐') ||
-              txt.includes('5小时') ||
-              txt.includes('每周');
-            return { hasLoginMarkers, hasUsageMarkers };
-          });
-
-          await verifyPage.close();
-          verified = !redirectedToAuth && !verifyMarkers.hasLoginMarkers && verifyMarkers.hasUsageMarkers;
-        } catch {
+        // Strong verification: check protected usage page in a background tab.
+        if (verifyUrl) {
           verified = false;
+          // Bug 2 fix: always close verifyPage in a finally block.
+          let verifyPage: any = null;
+          try {
+            verifyPage = await browser.newPage();
+            await configureVisiblePage(verifyPage);
+            await verifyPage.setCookie(...cookies);
+            await verifyPage.goto(verifyUrl, { waitUntil: 'networkidle2', timeout: 60_000 });
+
+            const verifyHref = verifyPage.url().toLowerCase();
+            const redirectedToAuth =
+              verifyHref.includes('/auth') ||
+              verifyHref.includes('/login') ||
+              verifyHref.includes('/signin') ||
+              verifyHref.includes('/sign-in');
+
+            const verifyMarkers = await verifyPage.evaluate(() => {
+              const txt = (document.body?.innerText ?? '').toLowerCase();
+              const hasLoginMarkers =
+                txt.includes('continue with google') ||
+                txt.includes('continue with microsoft') ||
+                txt.includes('continue with apple') ||
+                txt.includes('log in') ||
+                txt.includes('sign in') ||
+                txt.includes('enter your email') ||
+                txt.includes('one-time password') ||
+                txt.includes('otp') ||
+                txt.includes('登录') ||
+                txt.includes('注册') ||
+                txt.includes('手机号') ||
+                txt.includes('验证码') ||
+                txt.includes('扫码登录') ||
+                txt.includes('微信扫码');
+              const hasUsageMarkers =
+                txt.includes('usage') ||
+                txt.includes('rate limit') ||
+                txt.includes('weekly') ||
+                txt.includes('5h') ||
+                txt.includes('codex') ||
+                txt.includes('用量') ||
+                txt.includes('额度') ||
+                txt.includes('套餐') ||
+                txt.includes('5小时') ||
+                txt.includes('每周');
+              return { hasLoginMarkers, hasUsageMarkers };
+            });
+
+            verified = !redirectedToAuth && !verifyMarkers.hasLoginMarkers && verifyMarkers.hasUsageMarkers;
+          } catch {
+            verified = false;
+          } finally {
+            if (verifyPage) { try { await verifyPage.close(); } catch { /* ignore */ } }
+          }
+        }
+
+        if (verified) {
+          success = true;
+          break;
         }
       }
-
-      if (verified) {
-        success = true;
-        break;
-      }
-    }
 
       await new Promise((r) => setTimeout(r, pollMs));
     }
@@ -397,13 +440,14 @@ export async function authenticate(
       return false;
     }
 
-    const cookies = await page.cookies();
+    const cookiesFile2 = cookiesPath(providerId);
+    const finalCookies = await page.cookies();
     if (!fs.existsSync(COOKIES_DIR)) {
       fs.mkdirSync(COOKIES_DIR, { recursive: true, mode: 0o700 });
     }
-    fs.writeFileSync(cookiesFile, JSON.stringify(cookies, null, 2), { encoding: 'utf-8', mode: 0o600 });
+    fs.writeFileSync(cookiesFile2, JSON.stringify(finalCookies, null, 2), { encoding: 'utf-8', mode: 0o600 });
 
-    // Clear cookie cache so next scrape loads the fresh cookies from disk
+    // Clear cookie cache so next scrape loads the fresh cookies from disk.
     _cookiesCache.delete(providerId);
 
     onStatus?.('Auth successful. Saving session...');
@@ -418,30 +462,41 @@ export async function scrapePageHtml(
   url: string,
 ): Promise<string> {
   const browser = await getScrapeBrowser();
-  const page = (await browser.pages())[0] || await browser.newPage();
+  // Use a fresh page to avoid bfcache returning stale content (same reason as createScrapePageForProvider).
+  const page = await browser.newPage();
+  await page.setCacheEnabled(false);
 
-  const cookiesFile = cookiesPath(providerId);
-  if (fs.existsSync(cookiesFile)) {
-    const cookies = JSON.parse(fs.readFileSync(cookiesFile, 'utf-8'));
-    await page.setCookie(...cookies);
+  try {
+    const cookiesFile = cookiesPath(providerId);
+    if (fs.existsSync(cookiesFile)) {
+      try {
+        const cookies = JSON.parse(fs.readFileSync(cookiesFile, 'utf-8'));
+        if (Array.isArray(cookies) && cookies.length > 0) await page.setCookie(...cookies);
+      } catch { /* ignore malformed cookies */ }
+    }
+
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60_000 });
+    await new Promise(r => setTimeout(r, 2000));
+
+    return await page.content();
+  } finally {
+    try { await page.close(); } catch { /* ignore */ }
   }
-
-  await page.goto(url, { waitUntil: 'networkidle2', timeout: 60_000 });
-  await new Promise(r => setTimeout(r, 2000));
-
-  return await page.content();
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function getScrapedPage(providerId: string, url: string, headless: boolean = true): Promise<any> {
   const browser = headless ? await getScrapeBrowser() : await getAuthBrowser();
   const page = await browser.newPage();
+  if (headless) await page.setCacheEnabled(false);
   if (!headless) await configureVisiblePage(page);
 
   const cookiesFile = cookiesPath(providerId);
   if (fs.existsSync(cookiesFile)) {
-    const cookies = JSON.parse(fs.readFileSync(cookiesFile, 'utf-8'));
-    await page.setCookie(...cookies);
+    try {
+      const cookies = JSON.parse(fs.readFileSync(cookiesFile, 'utf-8'));
+      if (Array.isArray(cookies) && cookies.length > 0) await page.setCookie(...cookies);
+    } catch { /* ignore malformed cookies */ }
   }
 
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 60_000 });
@@ -454,12 +509,15 @@ export async function getScrapedPage(providerId: string, url: string, headless: 
 export async function getPreparedPage(providerId: string, headless: boolean = true): Promise<any> {
   const browser = headless ? await getScrapeBrowser() : await getAuthBrowser();
   const page = await browser.newPage();
+  if (headless) await page.setCacheEnabled(false);
   if (!headless) await configureVisiblePage(page);
 
   const cookiesFile = cookiesPath(providerId);
   if (fs.existsSync(cookiesFile)) {
-    const cookies = JSON.parse(fs.readFileSync(cookiesFile, 'utf-8'));
-    await page.setCookie(...cookies);
+    try {
+      const cookies = JSON.parse(fs.readFileSync(cookiesFile, 'utf-8'));
+      if (Array.isArray(cookies) && cookies.length > 0) await page.setCookie(...cookies);
+    } catch { /* ignore malformed cookies */ }
   }
 
   return page;
