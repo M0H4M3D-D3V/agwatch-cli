@@ -1,6 +1,6 @@
 {
   "name": "agwatch-cli",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Terminal analytics CLI for AI coding agents, usage, costs, tokens, and providers",
   "type": "module",
   "bin": {

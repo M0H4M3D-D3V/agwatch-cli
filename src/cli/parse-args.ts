@@ -1,4 +1,7 @@
 import { Command } from 'commander';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { TimeRange } from '../domain/types.js';
 import type { FallbackMode } from '../providers/runtime-options.js';
 
@@ -15,6 +18,18 @@ export type CliArgs = {
   providerFallback?: FallbackMode;
 };
 
+function getCliVersion(): string {
+  try {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const packageJsonPath = path.resolve(here, '../../package.json');
+    const raw = fs.readFileSync(packageJsonPath, 'utf8');
+    const pkg = JSON.parse(raw) as { version?: string };
+    return pkg.version || '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
 export function parseArgs(): CliArgs {
   let result: CliArgs = { command: 'dashboard' };
 
@@ -23,7 +38,7 @@ export function parseArgs(): CliArgs {
   program
     .name('agwatch')
     .description('AI Usage CLI Dashboard')
-    .version('1.0.0')
+    .version(getCliVersion())
     .option('--range <range>', 'Time range: today, 7d, 30d, month', '7d')
     .option('--watch', 'Enable auto-refresh')
     .option('--provider-debug', 'Enable provider debug mode')
