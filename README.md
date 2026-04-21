@@ -267,6 +267,60 @@ Provider configuration is handled from inside the dashboard.
 
 If browser automation dependencies are missing, `agwatch` prompts to install them during setup.
 
+## Provider Session Security
+
+When you authenticate a provider, `agwatch` captures the browser session cookies needed to fetch your usage data and stores them locally so you are not prompted to log in on every run.
+
+### What is stored
+
+Only authentication-relevant cookies are saved — session tokens, auth tokens, and `httpOnly` server-set cookies. Analytics, tracking, and other non-auth cookies are discarded before the file is written.
+
+### Encryption
+
+Stored cookies are encrypted at rest using **AES-256-GCM**.
+
+The encryption key is derived per-provider using **HKDF-SHA256** keyed from a stable machine-bound identifier:
+
+| Platform | Machine identifier |
+|---|---|
+| Windows | `HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid` |
+| macOS | `IOPlatformSerialNumber` via `ioreg` |
+| Linux | `/etc/machine-id` or `/var/lib/dbus/machine-id` |
+
+This means a cookie file copied off your machine cannot be decrypted without the source machine's identifier.
+
+### File permissions
+
+Cookie files are written with owner-only access:
+
+| Platform | Enforcement |
+|---|---|
+| macOS / Linux | `chmod 0600` at write time |
+| Windows | `icacls` removes inherited ACLs and grants full control only to the current user |
+
+### Storage location
+
+```text
+~/.config/agwatch/provider-cookies/<provider-id>.json
+```
+
+### Expiry
+
+Cookies with past expiry timestamps are filtered out automatically on every load. If all stored cookies for a provider have expired, the file is deleted and you are prompted to re-authenticate.
+
+### Linux note
+
+On Linux, `agwatch` will display a security notice if `libsecret` is not installed. `libsecret` is required for OS-keychain-backed key storage via `keytar`. Without it, the machine-ID derivation described above is used as a fallback.
+
+Install `libsecret` for your distribution:
+
+| Distribution | Command |
+|---|---|
+| Debian / Ubuntu | `sudo apt-get install libsecret-1-dev` |
+| Red Hat / Fedora / CentOS | `sudo yum install libsecret-devel` |
+| Arch Linux | `sudo pacman -S libsecret` |
+| Alpine Linux | `sudo apk add libsecret-dev` |
+
 ## Pricing
 
 Model pricing is fetched from the LiteLLM pricing database and cached locally.

@@ -1,9 +1,11 @@
 import fs from 'node:fs';
 import { getProviderCookiesPath } from '../utils/paths.js';
+import { decryptCookies } from './secret-store.js';
 
 type CookieRow = {
   name?: string;
   value?: string;
+  expires?: number;
 };
 
 export type ProviderSession = {
@@ -23,8 +25,23 @@ export function loadProviderSession(providerId: string): ProviderSession | null 
 
   try {
     const raw = fs.readFileSync(p, 'utf-8');
-    const arr = JSON.parse(raw) as CookieRow[];
-    if (!Array.isArray(arr) || arr.length === 0) return null;
+    const all = decryptCookies(raw, providerId) as CookieRow[];
+    if (!Array.isArray(all) || all.length === 0) return null;
+
+    // Discard cookies that have a past expiry timestamp.
+    const nowSec = Date.now() / 1000;
+    const arr = all.filter((row) => {
+      if (typeof row.expires !== 'number') return true; // session cookie, no expiry field
+      if (Number.isNaN(row.expires)) return true;       // guard: NaN treated as session cookie
+      if (row.expires <= 0) return true;                // session cookie encoded as -1 or 0
+      return row.expires > nowSec;
+    });
+
+    // All stored cookies are expired — clear the file so next call triggers re-auth.
+    if (arr.length === 0) {
+      try { fs.unlinkSync(p); } catch { /* ignore */ }
+      return null;
+    }
 
     const cookiesByName: Record<string, string> = {};
     for (const row of arr) {

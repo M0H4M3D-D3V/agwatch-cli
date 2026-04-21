@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { getProviderCookiesDir, getProviderCookiesPath } from '../utils/paths.js';
+import { encryptCookies, decryptCookies, isAuthCookie, setRestrictiveFilePerms, checkLinuxLibSecret } from './secret-store.js';
 
 const COOKIES_DIR = getProviderCookiesDir();
 
@@ -41,9 +42,10 @@ function getCachedCookies(providerId: string): any[] {
   const cookiesFile = cookiesPath(providerId);
   if (!fs.existsSync(cookiesFile)) return [];
   try {
-    const cookies = JSON.parse(fs.readFileSync(cookiesFile, 'utf-8'));
-    const arr = Array.isArray(cookies) ? cookies : [];
-    if (arr.length > 0) _cookiesCache.set(providerId, arr);
+    const raw = fs.readFileSync(cookiesFile, 'utf-8');
+    const arr = decryptCookies(raw, providerId);
+    if (!Array.isArray(arr) || arr.length === 0) return [];
+    _cookiesCache.set(providerId, arr);
     return arr;
   } catch {
     return [];
@@ -401,6 +403,29 @@ export async function authenticate(
   verifyUrl: string | undefined,
   onStatus?: (msg: string) => void,
 ): Promise<boolean> {
+  // ── Linux security pre-check ────────────────────────────────────────────────
+  const libSecret = checkLinuxLibSecret();
+  if (libSecret && !libSecret.ok) {
+    onStatus?.('');
+    onStatus?.('  ╔══════════════════════════════════════════════════════════╗');
+    onStatus?.('  ║          SECURITY REQUIREMENT: libsecret missing         ║');
+    onStatus?.('  ╠══════════════════════════════════════════════════════════╣');
+    onStatus?.('  ║  agwatch uses libsecret (via keytar) to store cookie     ║');
+    onStatus?.('  ║  encryption keys securely in your OS keychain.           ║');
+    onStatus?.('  ║  Without it, keys are derived from your machine ID only. ║');
+    onStatus?.('  ║                                                          ║');
+    onStatus?.('  ║  Install libsecret for your distro:                      ║');
+    for (const line of libSecret.installCmd.split('\n')) {
+      const padded = `  ║  ${line}`.padEnd(62) + '║';
+      onStatus?.(padded);
+    }
+    onStatus?.('  ║                                                          ║');
+    onStatus?.('  ║  Auth will continue with reduced key security.           ║');
+    onStatus?.('  ╚══════════════════════════════════════════════════════════╝');
+    onStatus?.('');
+  }
+  // ───────────────────────────────────────────────────────────────────────────
+
   if (!canOpenVisibleBrowser()) {
     onStatus?.('Cannot open auth browser: no display server detected. Set DISPLAY or WAYLAND_DISPLAY.');
     return false;
@@ -413,17 +438,8 @@ export async function authenticate(
   await configureVisiblePage(page);
 
   try {
-    const cookiesFile = cookiesPath(providerId);
-
-    // Bug 3 fix: wrap cookie load so a malformed file returns false instead of throwing.
-    if (fs.existsSync(cookiesFile)) {
-      try {
-        const cookies = JSON.parse(fs.readFileSync(cookiesFile, 'utf-8'));
-        if (Array.isArray(cookies) && cookies.length > 0) await page.setCookie(...cookies);
-      } catch {
-        // Ignore corrupt cookies — user will log in fresh.
-      }
-    }
+    const existingCookies = getCachedCookies(providerId);
+    if (existingCookies.length > 0) await page.setCookie(...existingCookies);
 
     await page.goto(authUrl, { waitUntil: 'networkidle2', timeout: 120_000 });
 
@@ -564,11 +580,16 @@ export async function authenticate(
     }
 
     const cookiesFile2 = cookiesPath(providerId);
-    const finalCookies = await page.cookies();
+    const allCookies = await page.cookies();
+    const authCookies = allCookies.filter(isAuthCookie);
+    // Guard: if the filter strips everything (e.g. unknown provider cookie format), keep all cookies
+    // rather than saving an empty array which would silently break auth on next run.
+    const cookiesToSave = authCookies.length > 0 ? authCookies : allCookies;
     if (!fs.existsSync(COOKIES_DIR)) {
       fs.mkdirSync(COOKIES_DIR, { recursive: true, mode: 0o700 });
     }
-    fs.writeFileSync(cookiesFile2, JSON.stringify(finalCookies, null, 2), { encoding: 'utf-8', mode: 0o600 });
+    fs.writeFileSync(cookiesFile2, encryptCookies(cookiesToSave, providerId), { encoding: 'utf-8', mode: 0o600 });
+    setRestrictiveFilePerms(cookiesFile2);
 
     // Clear cookie cache so next scrape loads the fresh cookies from disk.
     _cookiesCache.delete(providerId);
@@ -590,13 +611,8 @@ export async function scrapePageHtml(
   await page.setCacheEnabled(false);
 
   try {
-    const cookiesFile = cookiesPath(providerId);
-    if (fs.existsSync(cookiesFile)) {
-      try {
-        const cookies = JSON.parse(fs.readFileSync(cookiesFile, 'utf-8'));
-        if (Array.isArray(cookies) && cookies.length > 0) await page.setCookie(...cookies);
-      } catch { /* ignore malformed cookies */ }
-    }
+    const cookies = getCachedCookies(providerId);
+    if (cookies.length > 0) await page.setCookie(...cookies);
 
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 60_000 });
     await new Promise(r => setTimeout(r, 2000));
@@ -614,13 +630,8 @@ export async function getScrapedPage(providerId: string, url: string, headless: 
   if (headless) await page.setCacheEnabled(false);
   if (!headless) await configureVisiblePage(page);
 
-  const cookiesFile = cookiesPath(providerId);
-  if (fs.existsSync(cookiesFile)) {
-    try {
-      const cookies = JSON.parse(fs.readFileSync(cookiesFile, 'utf-8'));
-      if (Array.isArray(cookies) && cookies.length > 0) await page.setCookie(...cookies);
-    } catch { /* ignore malformed cookies */ }
-  }
+  const cookies = getCachedCookies(providerId);
+  if (cookies.length > 0) await page.setCookie(...cookies);
 
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 60_000 });
   await new Promise(r => setTimeout(r, 2000));
@@ -635,13 +646,8 @@ export async function getPreparedPage(providerId: string, headless: boolean = tr
   if (headless) await page.setCacheEnabled(false);
   if (!headless) await configureVisiblePage(page);
 
-  const cookiesFile = cookiesPath(providerId);
-  if (fs.existsSync(cookiesFile)) {
-    try {
-      const cookies = JSON.parse(fs.readFileSync(cookiesFile, 'utf-8'));
-      if (Array.isArray(cookies) && cookies.length > 0) await page.setCookie(...cookies);
-    } catch { /* ignore malformed cookies */ }
-  }
+  const cookies = getCachedCookies(providerId);
+  if (cookies.length > 0) await page.setCookie(...cookies);
 
   return page;
 }
