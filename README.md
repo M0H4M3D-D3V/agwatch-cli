@@ -1,15 +1,6 @@
-```text
-     _______  _______             _______ _________ _______          
-    (  ___  )(  ____ \  |\     /|(  ___  )\__   __/(  ____ \|\     /|
-    | (   ) || (    \/  | )   ( || (   ) |   ) (   | (    \/| )   ( |
-    | (___) || |        | | _ | || (___) |   | |   | |      | (___) |
-    |  ___  || | ____   | |( )| ||  ___  |   | |   | |      |  ___  |
-    | (   ) || | \_  )  | || || || (   ) |   | |   | |      | (   ) |
-    | )   ( || (___) |  | () () || )   ( |   | |   | (____/\| )   ( |
-    |/     \|(_______)  (_______)|/     \|   )_(   (_______/|/     \|
-```
+<img src="https://raw.githubusercontent.com/M0H4M3D-D3V/agwatch-cli/main/images/cover.png" alt="agwatch cover" width="1200" />
 
-<img src="https://raw.githubusercontent.com/M0H4M3D-D3V/agwatch-cli/main/screenshot.png" alt="agwatch dashboard" width="1200" />
+<img src="https://raw.githubusercontent.com/M0H4M3D-D3V/agwatch-cli/main/images/screenshot.png" alt="agwatch dashboard" width="1200" />
 
 `agwatch` is a terminal analytics CLI for AI coding workflows. It reads local usage data from supported agents, normalizes it into a shared event model, and renders that data as an interactive dashboard or structured summary output.
 
@@ -197,6 +188,8 @@ agwatch summary --json
 
 Progress bars are relative to the highest row in each panel.
 
+<img src="https://raw.githubusercontent.com/M0H4M3D-D3V/agwatch-cli/main/images/preview.png" alt="agwatch dashboard preview" width="1200" />
+
 ## Configuration
 
 Configuration is stored in:
@@ -338,6 +331,8 @@ Behavior:
 5. If a source record already contains a non-zero cost, that stored cost is used.
 
 ## Summary Output
+
+<img src="https://raw.githubusercontent.com/M0H4M3D-D3V/agwatch-cli/main/images/usage.png" alt="agwatch usage summary preview" width="1200" />
 
 ### Text Output
 
