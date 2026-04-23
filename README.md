@@ -70,6 +70,8 @@ Supported providers currently include:
 
 ## Installation
 
+<img src="https://raw.githubusercontent.com/M0H4M3D-D3V/agwatch-cli/main/images/usage.png" alt="agwatch usage summary preview" width="1200" />
+
 ### Requirements
 
 - Node.js `18+`
@@ -174,6 +176,8 @@ agwatch summary --json
 
 ## Dashboard Panels
 
+<img src="https://raw.githubusercontent.com/M0H4M3D-D3V/agwatch-cli/main/images/preview.png" alt="agwatch dashboard preview" width="1200" />
+
 | Panel | What it shows |
 |---|---|
 | `Overview` | Total cost, calls, sessions, cache hit rate, and token totals |
@@ -187,8 +191,6 @@ agwatch summary --json
 | `MCP Servers` | MCP server usage frequency |
 
 Progress bars are relative to the highest row in each panel.
-
-<img src="https://raw.githubusercontent.com/M0H4M3D-D3V/agwatch-cli/main/images/preview.png" alt="agwatch dashboard preview" width="1200" />
 
 ## Configuration
 
@@ -331,8 +333,6 @@ Behavior:
 5. If a source record already contains a non-zero cost, that stored cost is used.
 
 ## Summary Output
-
-<img src="https://raw.githubusercontent.com/M0H4M3D-D3V/agwatch-cli/main/images/usage.png" alt="agwatch usage summary preview" width="1200" />
 
 ### Text Output
 
