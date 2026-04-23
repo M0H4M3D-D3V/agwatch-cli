@@ -86,7 +86,11 @@ export async function scrapeAllProvidersWithOptions(options: { allowVisibleFallb
       if (data.error) {
         debugLog(`${conn.label} completed with error in ${ms}ms (source=${data.source ?? 'n/a'}, code=${data.errorCode ?? 'n/a'}): ${data.error}`);
       } else {
-        debugLog(`${conn.label} completed in ${ms}ms (source=${data.source ?? 'n/a'}): 5h=${data.sessionUsedPct}% wk=${data.weeklyUsedPct}%`);
+        const extra: string[] = [];
+        if (data.monthlyUsedPct != null) extra.push(`mo=${data.monthlyUsedPct}%`);
+        if (data.designWeeklyUsedPct != null) extra.push(`dwk=${data.designWeeklyUsedPct}%`);
+        const extraStr = extra.length ? ` ${extra.join(' ')}` : '';
+        debugLog(`${conn.label} completed in ${ms}ms (source=${data.source ?? 'n/a'}): 5h=${data.sessionUsedPct}% wk=${data.weeklyUsedPct}%${extraStr}`);
       }
       return data;
     } catch (err) {

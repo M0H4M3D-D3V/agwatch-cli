@@ -2,22 +2,12 @@ import type { ProviderConnector, ProviderUsageData } from './types.js';
 import { getSupportedProvider } from '../config/providers.js';
 import { hasCookies, deleteCookies, authenticate, createScrapePageForProvider } from './browser.js';
 import { loadProviderSession } from './session.js';
-import { fetchAnthropicUsageApi } from './anthropic-api.js';
+import { fetchAnthropicUsageApi, extractDesignLimit, parseAnthropicUsage } from './anthropic-api.js';
 import { getFallbackMode, shouldFallbackToBrowser } from './fallback-policy.js';
 import { ProviderScrapeError, toProviderScrapeError } from './errors.js';
 import { recordScrapeMetric } from './metrics.js';
-import { clampPct, formatDateShort } from './format-utils.js';
 
-type AnthropicUsageResponse = {
-  five_hour?: {
-    utilization?: number;
-    resets_at?: string | null;
-  };
-  seven_day?: {
-    utilization?: number;
-    resets_at?: string | null;
-  };
-};
+type RawUsageResponse = Record<string, any>;
 
 export class AnthropicConnector implements ProviderConnector {
   readonly id = 'anthropic';
@@ -88,7 +78,7 @@ export class AnthropicConnector implements ProviderConnector {
     try {
       page = await createScrapePageForProvider(this.id);
 
-      const usageJsonPromise = new Promise<AnthropicUsageResponse>((resolve, reject) => {
+      const usageJsonPromise = new Promise<RawUsageResponse>((resolve, reject) => {
         let done = false;
 
         const finish = (cb: () => void): void => {
@@ -126,8 +116,8 @@ export class AnthropicConnector implements ProviderConnector {
 
           try {
             const raw = await res.text();
-            const parsed = JSON.parse(raw) as AnthropicUsageResponse;
-            if (!this.isValidAnthropicUsageResponse(parsed)) {
+            const parsed = JSON.parse(raw) as RawUsageResponse;
+            if (!this.isValidRawUsage(parsed)) {
               return;
             }
             finish(() => resolve(parsed));
@@ -144,32 +134,27 @@ export class AnthropicConnector implements ProviderConnector {
 
       await page.goto(this.def.usageUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
       const data = await usageJsonPromise;
-      if (!this.isValidAnthropicUsageResponse(data)) {
+      if (!this.isValidRawUsage(data)) {
         throw new Error('Anthropic usage API returned invalid payload shape');
       }
 
-      const sessionUsedPct = this.toPct(data.five_hour?.utilization);
-      const weeklyUsedPct = this.toPct(data.seven_day?.utilization);
-      const sessionResetDate = this.formatIsoReset(data.five_hour?.resets_at ?? null);
-      const weeklyResetDate = this.formatIsoReset(data.seven_day?.resets_at ?? null);
+      const result = parseAnthropicUsage(data);
+      const hasDesignBlock = extractDesignLimit(data) != null;
 
-      const parseFailed =
-        sessionUsedPct === 0 &&
-        weeklyUsedPct === 0 &&
-        sessionResetDate === '--' &&
-        weeklyResetDate === '--';
+      const hasPrimaryUsage = result.sessionUsedPct !== 0 || result.weeklyUsedPct !== 0;
+      const hasDesignUsage = hasDesignBlock || result.designWeeklyUsedPct !== 0;
+      const hasAnyUsage = hasPrimaryUsage || hasDesignUsage;
 
-      return {
-        providerId: this.id,
-        providerLabel: this.label,
-        color: this.color,
-        sessionUsedPct,
-        weeklyUsedPct,
-        sessionResetDate,
-        weeklyResetDate,
-        scrapedAt: Date.now(),
-        error: parseFailed ? 'Could not parse Anthropic usage API response' : undefined,
-      };
+      const hasPrimaryReset = result.sessionResetDate !== '--' || result.weeklyResetDate !== '--';
+      const hasDesignReset = hasDesignBlock || result.designWeeklyResetDate !== '--';
+      const hasAnyReset = hasPrimaryReset || hasDesignReset;
+
+      const parseFailed = !hasAnyUsage && !hasAnyReset;
+
+      if (parseFailed) {
+        result.error = 'Could not parse Anthropic usage API response';
+      }
+      return result;
     } catch (err) {
       return this.errorRow(toProviderScrapeError(err), 'browser-fallback');
     } finally {
@@ -186,6 +171,8 @@ export class AnthropicConnector implements ProviderConnector {
       weeklyUsedPct: 0,
       sessionResetDate: '--',
       weeklyResetDate: '--',
+      designWeeklyUsedPct: 0,
+      designWeeklyResetDate: '--',
       scrapedAt: Date.now(),
       error: err.message,
       errorCode: err.code,
@@ -194,29 +181,28 @@ export class AnthropicConnector implements ProviderConnector {
     };
   }
 
-  private toPct(utilization: number | null | undefined): number {
-    return clampPct(utilization ?? 0);
-  }
-
-  private isValidAnthropicUsageResponse(data: AnthropicUsageResponse): boolean {
+  private isValidRawUsage(data: RawUsageResponse | undefined): boolean {
     if (!data || typeof data !== 'object') return false;
 
-    const hasFiveHour = !!data.five_hour &&
-      Number.isFinite(data.five_hour.utilization as number) &&
-      typeof data.five_hour.resets_at === 'string';
+    const fiveHour = data['five_hour'];
+    const sevenDay = data['seven_day'];
 
-    const hasSevenDay = !!data.seven_day &&
-      Number.isFinite(data.seven_day.utilization as number) &&
-      typeof data.seven_day.resets_at === 'string';
+    const hasFiveHour = !!fiveHour &&
+      typeof fiveHour === 'object' &&
+      typeof fiveHour.utilization === 'number' &&
+      typeof fiveHour.resets_at === 'string';
 
-    return hasFiveHour || hasSevenDay;
-  }
+    const hasSevenDay = !!sevenDay &&
+      typeof sevenDay === 'object' &&
+      typeof sevenDay.utilization === 'number' &&
+      typeof sevenDay.resets_at === 'string';
 
-  private formatIsoReset(value: string | null): string {
-    if (!value) return '--';
-    const parsed = new Date(value);
-    if (Number.isNaN(parsed.getTime())) return '--';
-    return formatDateShort(parsed);
+    if (hasFiveHour || hasSevenDay) return true;
+
+    const design = extractDesignLimit(data);
+    if (design && typeof design.utilization === 'number') return true;
+
+    return false;
   }
 
   removeConfig(): void {

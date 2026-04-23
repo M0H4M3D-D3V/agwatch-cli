@@ -10,16 +10,76 @@ type AnthropicOrg = {
   id?: string;
 };
 
-type AnthropicUsageResponse = {
-  five_hour?: {
-    utilization?: number;
-    resets_at?: string | null;
-  };
-  seven_day?: {
-    utilization?: number;
-    resets_at?: string | null;
-  };
+type LimitBlock = {
+  utilization?: number;
+  resets_at?: string | null;
 };
+
+type RawUsageResponse = Record<string, any>;
+
+const DESIGN_KEY_PATTERNS = ['seven_day_omelette', 'design_seven_day', 'designs_seven_day', 'design_weekly'];
+
+export function extractDesignLimit(raw: RawUsageResponse): LimitBlock | null {
+  for (const pattern of DESIGN_KEY_PATTERNS) {
+    const block = raw[pattern];
+    if (block && typeof block === 'object' && typeof block.utilization === 'number') {
+      return block as LimitBlock;
+    }
+  }
+  for (const key of Object.keys(raw)) {
+    const kl = key.toLowerCase();
+    if (!kl.includes('omelette') && !kl.includes('design')) continue;
+    if (DESIGN_KEY_PATTERNS.includes(key)) continue;
+    const block = raw[key];
+    if (block && typeof block === 'object' && typeof block.utilization === 'number') {
+      return block as LimitBlock;
+    }
+  }
+  return null;
+}
+
+export function parseAnthropicUsage(raw: RawUsageResponse): ProviderUsageData {
+  const fiveHour = raw['five_hour'] as LimitBlock | undefined;
+  const sevenDay = raw['seven_day'] as LimitBlock | undefined;
+  const designBlock = extractDesignLimit(raw);
+
+  return {
+    providerId: 'anthropic',
+    providerLabel: 'Anthropic',
+    color: '#C77DFF',
+    sessionUsedPct: toPct(fiveHour?.utilization),
+    weeklyUsedPct: toPct(sevenDay?.utilization),
+    sessionResetDate: formatIsoReset(fiveHour?.resets_at ?? null),
+    weeklyResetDate: formatIsoReset(sevenDay?.resets_at ?? null),
+    designWeeklyUsedPct: toPct(designBlock?.utilization),
+    designWeeklyResetDate: formatIsoReset(designBlock?.resets_at ?? null),
+    scrapedAt: Date.now(),
+  };
+}
+
+function isValidUsagePayload(raw: RawUsageResponse | undefined): boolean {
+  if (!raw || typeof raw !== 'object') return false;
+
+  const fiveHour = raw['five_hour'];
+  const sevenDay = raw['seven_day'];
+
+  const hasFiveHour = !!fiveHour &&
+    typeof fiveHour === 'object' &&
+    typeof fiveHour.utilization === 'number' &&
+    typeof fiveHour.resets_at === 'string';
+
+  const hasSevenDay = !!sevenDay &&
+    typeof sevenDay === 'object' &&
+    typeof sevenDay.utilization === 'number' &&
+    typeof sevenDay.resets_at === 'string';
+
+  if (hasFiveHour || hasSevenDay) return true;
+
+  const design = extractDesignLimit(raw);
+  if (design && typeof design.utilization === 'number') return true;
+
+  return false;
+}
 
 export async function fetchAnthropicUsageApi(session: ProviderSession, timeoutMs: number): Promise<ProviderUsageData> {
   const orgsRes = await httpRequest<AnthropicOrg[]>({
@@ -47,7 +107,7 @@ export async function fetchAnthropicUsageApi(session: ProviderSession, timeoutMs
     throw new ProviderScrapeError('payload_invalid', 'Anthropic organization id not found', true);
   }
 
-  const usageRes = await httpRequest<AnthropicUsageResponse>({
+  const usageRes = await httpRequest<RawUsageResponse>({
     url: `https://claude.ai/api/organizations/${orgId}/usage`,
     timeoutMs,
     headers: {
@@ -70,34 +130,11 @@ export async function fetchAnthropicUsageApi(session: ProviderSession, timeoutMs
   }
 
   const data = usageRes.json;
-  if (!isValidAnthropicUsageResponse(data)) {
+  if (!isValidUsagePayload(data)) {
     throw new ProviderScrapeError('payload_invalid', 'Anthropic usage payload invalid', true);
   }
 
-  return {
-    providerId: 'anthropic',
-    providerLabel: 'Anthropic',
-    color: '#C77DFF',
-    sessionUsedPct: toPct(data.five_hour?.utilization),
-    weeklyUsedPct: toPct(data.seven_day?.utilization),
-    sessionResetDate: formatIsoReset(data.five_hour?.resets_at ?? null),
-    weeklyResetDate: formatIsoReset(data.seven_day?.resets_at ?? null),
-    scrapedAt: Date.now(),
-  };
-}
-
-function isValidAnthropicUsageResponse(data: AnthropicUsageResponse | undefined): data is AnthropicUsageResponse {
-  if (!data || typeof data !== 'object') return false;
-
-  const hasFiveHour = !!data.five_hour &&
-    Number.isFinite(data.five_hour.utilization as number) &&
-    typeof data.five_hour.resets_at === 'string';
-
-  const hasSevenDay = !!data.seven_day &&
-    Number.isFinite(data.seven_day.utilization as number) &&
-    typeof data.seven_day.resets_at === 'string';
-
-  return hasFiveHour || hasSevenDay;
+  return parseAnthropicUsage(data!);
 }
 
 function toPct(utilization: number | null | undefined): number {
