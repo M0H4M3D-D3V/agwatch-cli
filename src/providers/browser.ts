@@ -4,6 +4,7 @@ import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { getProviderCookiesDir, getProviderCookiesPath } from '../utils/paths.js';
 import { encryptCookies, decryptCookies, isAuthCookie, setRestrictiveFilePerms, checkLinuxLibSecret } from './secret-store.js';
+import { isPuppeteerInstalled } from './deps.js';
 
 const COOKIES_DIR = getProviderCookiesDir();
 
@@ -212,6 +213,13 @@ async function runPuppeteerBrowserInstall(onStatus?: (msg: string) => void): Pro
 }
 
 async function launchBrowser(headless: boolean, onStatus?: (msg: string) => void): Promise<any> {
+  if (!isPuppeteerInstalled()) {
+    throw new Error(
+      'Puppeteer not installed — browser fallback requires it. ' +
+      'Press p → select a provider to install Puppeteer and authenticate.',
+    );
+  }
+
   const puppeteerExtra = (await import('puppeteer-extra')).default as any;
   if (!_stealthPluginRegistered) {
     const StealthPlugin = (await import('puppeteer-extra-plugin-stealth')).default as any;
