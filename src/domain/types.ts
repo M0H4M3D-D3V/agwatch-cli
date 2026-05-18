@@ -28,6 +28,8 @@ export type AggregateRow = {
   name: string;
   inputTokens: number;
   outputTokens: number;
+  cachedTokens: number;
+  writtenTokens: number;
   costUsd: number;
   calls: number;
   sessions: number;

@@ -9,7 +9,7 @@ function computePercentOfMax(rows: { value: number }[]): number[] {
 
 export function aggregateByDay(events: UsageEvent[]): DailyRow[] {
   const groups = groupBy(events, (e) => toDayKey(e.ts));
-  const rows: { name: string; day: string; value: number; inputTokens: number; outputTokens: number; costUsd: number; calls: number; sessions: string[] }[] = [];
+  const rows: { name: string; day: string; value: number; inputTokens: number; outputTokens: number; cachedTokens: number; writtenTokens: number; costUsd: number; calls: number; sessions: string[] }[] = [];
 
   for (const [day, items] of groups) {
     rows.push({
@@ -18,6 +18,8 @@ export function aggregateByDay(events: UsageEvent[]): DailyRow[] {
       value: items.reduce((s, e) => s + e.costUsd, 0),
       inputTokens: items.reduce((s, e) => s + e.inputTokens, 0),
       outputTokens: items.reduce((s, e) => s + e.outputTokens, 0),
+      cachedTokens: items.reduce((s, e) => s + e.cachedTokens, 0),
+      writtenTokens: items.reduce((s, e) => s + e.writtenTokens, 0),
       costUsd: items.reduce((s, e) => s + e.costUsd, 0),
       calls: items.reduce((s, e) => s + e.callCount, 0),
       sessions: items.map((e) => e.sessionId),
@@ -33,6 +35,8 @@ export function aggregateByDay(events: UsageEvent[]): DailyRow[] {
     day: r.day,
     inputTokens: r.inputTokens,
     outputTokens: r.outputTokens,
+    cachedTokens: r.cachedTokens,
+    writtenTokens: r.writtenTokens,
     costUsd: r.costUsd,
     calls: r.calls,
     sessions: unique(r.sessions).length,
@@ -60,6 +64,8 @@ export function aggregateByProject(events: UsageEvent[]): AggregateRow[] {
       name: r.name,
       inputTokens: items.reduce((s, e) => s + e.inputTokens, 0),
       outputTokens: items.reduce((s, e) => s + e.outputTokens, 0),
+      cachedTokens: items.reduce((s, e) => s + e.cachedTokens, 0),
+      writtenTokens: items.reduce((s, e) => s + e.writtenTokens, 0),
       costUsd: items.reduce((s, e) => s + e.costUsd, 0),
       calls: items.reduce((s, e) => s + e.callCount, 0),
       sessions: unique(items.map((e) => e.sessionId)).length,
@@ -88,6 +94,8 @@ export function aggregateByActivity(events: UsageEvent[]): AggregateRow[] {
       name: r.name,
       inputTokens: items.reduce((s, e) => s + e.inputTokens, 0),
       outputTokens: items.reduce((s, e) => s + e.outputTokens, 0),
+      cachedTokens: items.reduce((s, e) => s + e.cachedTokens, 0),
+      writtenTokens: items.reduce((s, e) => s + e.writtenTokens, 0),
       costUsd: items.reduce((s, e) => s + e.costUsd, 0),
       calls: items.reduce((s, e) => s + e.callCount, 0),
       sessions: 0,
@@ -116,6 +124,8 @@ export function aggregateByModel(events: UsageEvent[]): AggregateRow[] {
       name: r.name,
       inputTokens: items.reduce((s, e) => s + e.inputTokens, 0),
       outputTokens: items.reduce((s, e) => s + e.outputTokens, 0),
+      cachedTokens: items.reduce((s, e) => s + e.cachedTokens, 0),
+      writtenTokens: items.reduce((s, e) => s + e.writtenTokens, 0),
       costUsd: items.reduce((s, e) => s + e.costUsd, 0),
       calls: items.reduce((s, e) => s + e.callCount, 0),
       sessions: 0,
@@ -143,6 +153,8 @@ export function aggregateByTool(events: UsageEvent[]): AggregateRow[] {
     name: r.name,
     inputTokens: 0,
     outputTokens: 0,
+    cachedTokens: 0,
+    writtenTokens: 0,
     costUsd: 0,
     calls: groups.get(r.name)!.reduce((s, e) => s + e.callCount, 0),
     sessions: 0,
@@ -169,6 +181,8 @@ export function aggregateByShellCommand(events: UsageEvent[]): AggregateRow[] {
     name: r.name,
     inputTokens: 0,
     outputTokens: 0,
+    cachedTokens: 0,
+    writtenTokens: 0,
     costUsd: 0,
     calls: groups.get(r.name)!.reduce((s, e) => s + e.callCount, 0),
     sessions: 0,
@@ -195,6 +209,8 @@ export function aggregateByMcpServer(events: UsageEvent[]): AggregateRow[] {
     name: r.name,
     inputTokens: 0,
     outputTokens: 0,
+    cachedTokens: 0,
+    writtenTokens: 0,
     costUsd: 0,
     calls: groups.get(r.name)!.reduce((s, e) => s + e.callCount, 0),
     sessions: 0,
