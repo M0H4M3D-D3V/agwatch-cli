@@ -26,7 +26,7 @@ export class OpenCodeGoConnector implements ProviderConnector {
       this.id,
       this.def.authUrl,
       this.def.authSuccessPattern,
-      undefined,
+      this.def.usageUrl,
       onStatus,
     );
     if (!ok) throw new Error('Authentication failed or timed out');

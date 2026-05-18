@@ -408,7 +408,7 @@ export async function authenticate(
   providerId: string,
   authUrl: string,
   successPattern: string,
-  verifyUrl: string | undefined,
+  verifyUrl: string,
   onStatus?: (msg: string) => void,
 ): Promise<boolean> {
   // ── Linux security pre-check ────────────────────────────────────────────────
@@ -442,7 +442,7 @@ export async function authenticate(
   const browser = await getAuthBrowser(onStatus);
   onStatus?.('Browser opened. Please log in...');
 
-  const page = (await browser.pages())[0] || await browser.newPage();
+  let page = (await browser.pages())[0] || await browser.newPage();
   await configureVisiblePage(page);
 
   try {
@@ -458,7 +458,17 @@ export async function authenticate(
     let success = false;
 
     while (Date.now() - start < timeoutMs) {
-      // Bug 4 fix: if the user closes the browser window, page.url() throws — treat as still waiting.
+      // Re-acquire active page each tick — handles user closing original tab or OAuth popups taking over.
+      try {
+        const pages = await browser.pages();
+        const activePage = pages.find((p: any) => {
+          try { const u = p.url(); return u && u !== 'about:blank'; } catch { return false; }
+        });
+        if (activePage) page = activePage;
+      } catch { /* browser temporarily unreachable — treat as transient */ }
+
+      // page.url() / page.cookies() / page.evaluate() all throw during cross-origin OAuth redirects
+      // (e.g. "Execution context was destroyed") — treat every transient page error as still waiting.
       let href = '';
       try {
         href = page.url().toLowerCase();
@@ -474,7 +484,14 @@ export async function authenticate(
         href.includes('/signin') ||
         href.includes('/sign-in');
 
-      const cookies = await page.cookies();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let cookies: any[] = [];
+      try {
+        cookies = await page.cookies();
+      } catch {
+        await new Promise((r) => setTimeout(r, pollMs));
+        continue;
+      }
       const hasSessionCookie = cookies.some((c: { name: string }) =>
         /session|token|auth|next-auth/i.test(c.name),
       );
@@ -482,95 +499,98 @@ export async function authenticate(
         /__secure-next-auth\.session-token|next-auth\.session-token|session-token/i.test(c.name),
       );
 
-      const markers = await page.evaluate(() => {
-        const txt = (document.body?.innerText ?? '').toLowerCase();
-        const hasLoginMarkers =
-          txt.includes('continue with google') ||
-          txt.includes('continue with microsoft') ||
-          txt.includes('continue with apple') ||
-          txt.includes('log in') ||
-          txt.includes('sign in') ||
-          txt.includes('enter your email') ||
-          txt.includes('登录') ||
-          txt.includes('注册') ||
-          txt.includes('手机号') ||
-          txt.includes('验证码') ||
-          txt.includes('扫码登录') ||
-          txt.includes('微信扫码');
-        const hasAppMarkers =
-          txt.includes('new chat') ||
-          txt.includes('settings') ||
-          txt.includes('projects') ||
-          txt.includes('codex') ||
-          txt.includes('workspace') ||
-          txt.includes('套餐') ||
-          txt.includes('用量') ||
-          txt.includes('控制台') ||
-          txt.includes('模型');
-        return { hasLoginMarkers, hasAppMarkers };
-      });
+      let markers = { hasLoginMarkers: true, hasAppMarkers: false };
+      try {
+        markers = await page.evaluate(() => {
+          const txt = (document.body?.innerText ?? '').toLowerCase();
+          const hasLoginMarkers =
+            txt.includes('continue with google') ||
+            txt.includes('continue with microsoft') ||
+            txt.includes('continue with apple') ||
+            txt.includes('log in') ||
+            txt.includes('sign in') ||
+            txt.includes('enter your email') ||
+            txt.includes('登录') ||
+            txt.includes('注册') ||
+            txt.includes('手机号') ||
+            txt.includes('验证码') ||
+            txt.includes('扫码登录') ||
+            txt.includes('微信扫码');
+          const hasAppMarkers =
+            txt.includes('new chat') ||
+            txt.includes('settings') ||
+            txt.includes('projects') ||
+            txt.includes('codex') ||
+            txt.includes('workspace') ||
+            txt.includes('套餐') ||
+            txt.includes('用量') ||
+            txt.includes('控制台') ||
+            txt.includes('模型');
+          return { hasLoginMarkers, hasAppMarkers };
+        });
+      } catch {
+        await new Promise((r) => setTimeout(r, pollMs));
+        continue;
+      }
 
       // Candidate success: auth page left + session-like cookies.
       const candidate = (hasPattern && !stillInAuthFlow && hasSessionCookie) || (hasSolidSessionCookie && !markers.hasLoginMarkers);
 
       if (candidate) {
-        let verified = true;
-
         // Strong verification: check protected usage page in a background tab.
-        if (verifyUrl) {
+        // Bug 2 fix: always close verifyPage in a finally block.
+        let verified = false;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let verifyPage: any = null;
+        try {
+          verifyPage = await browser.newPage();
+          await configureVisiblePage(verifyPage);
+          await verifyPage.setCookie(...cookies);
+          await verifyPage.goto(verifyUrl, { waitUntil: 'networkidle2', timeout: 60_000 });
+
+          const verifyHref = verifyPage.url().toLowerCase();
+          const redirectedToAuth =
+            verifyHref.includes('/auth') ||
+            verifyHref.includes('/login') ||
+            verifyHref.includes('/signin') ||
+            verifyHref.includes('/sign-in');
+
+          const verifyMarkers = await verifyPage.evaluate(() => {
+            const txt = (document.body?.innerText ?? '').toLowerCase();
+            const hasLoginMarkers =
+              txt.includes('continue with google') ||
+              txt.includes('continue with microsoft') ||
+              txt.includes('continue with apple') ||
+              txt.includes('log in') ||
+              txt.includes('sign in') ||
+              txt.includes('enter your email') ||
+              txt.includes('one-time password') ||
+              txt.includes('otp') ||
+              txt.includes('登录') ||
+              txt.includes('注册') ||
+              txt.includes('手机号') ||
+              txt.includes('验证码') ||
+              txt.includes('扫码登录') ||
+              txt.includes('微信扫码');
+            const hasUsageMarkers =
+              txt.includes('usage') ||
+              txt.includes('rate limit') ||
+              txt.includes('weekly') ||
+              txt.includes('5h') ||
+              txt.includes('codex') ||
+              txt.includes('用量') ||
+              txt.includes('额度') ||
+              txt.includes('套餐') ||
+              txt.includes('5小时') ||
+              txt.includes('每周');
+            return { hasLoginMarkers, hasUsageMarkers };
+          });
+
+          verified = !redirectedToAuth && !verifyMarkers.hasLoginMarkers && verifyMarkers.hasUsageMarkers;
+        } catch {
           verified = false;
-          // Bug 2 fix: always close verifyPage in a finally block.
-          let verifyPage: any = null;
-          try {
-            verifyPage = await browser.newPage();
-            await configureVisiblePage(verifyPage);
-            await verifyPage.setCookie(...cookies);
-            await verifyPage.goto(verifyUrl, { waitUntil: 'networkidle2', timeout: 60_000 });
-
-            const verifyHref = verifyPage.url().toLowerCase();
-            const redirectedToAuth =
-              verifyHref.includes('/auth') ||
-              verifyHref.includes('/login') ||
-              verifyHref.includes('/signin') ||
-              verifyHref.includes('/sign-in');
-
-            const verifyMarkers = await verifyPage.evaluate(() => {
-              const txt = (document.body?.innerText ?? '').toLowerCase();
-              const hasLoginMarkers =
-                txt.includes('continue with google') ||
-                txt.includes('continue with microsoft') ||
-                txt.includes('continue with apple') ||
-                txt.includes('log in') ||
-                txt.includes('sign in') ||
-                txt.includes('enter your email') ||
-                txt.includes('one-time password') ||
-                txt.includes('otp') ||
-                txt.includes('登录') ||
-                txt.includes('注册') ||
-                txt.includes('手机号') ||
-                txt.includes('验证码') ||
-                txt.includes('扫码登录') ||
-                txt.includes('微信扫码');
-              const hasUsageMarkers =
-                txt.includes('usage') ||
-                txt.includes('rate limit') ||
-                txt.includes('weekly') ||
-                txt.includes('5h') ||
-                txt.includes('codex') ||
-                txt.includes('用量') ||
-                txt.includes('额度') ||
-                txt.includes('套餐') ||
-                txt.includes('5小时') ||
-                txt.includes('每周');
-              return { hasLoginMarkers, hasUsageMarkers };
-            });
-
-            verified = !redirectedToAuth && !verifyMarkers.hasLoginMarkers && verifyMarkers.hasUsageMarkers;
-          } catch {
-            verified = false;
-          } finally {
-            if (verifyPage) { try { await verifyPage.close(); } catch { /* ignore */ } }
-          }
+        } finally {
+          if (verifyPage) { try { await verifyPage.close(); } catch { /* ignore */ } }
         }
 
         if (verified) {
