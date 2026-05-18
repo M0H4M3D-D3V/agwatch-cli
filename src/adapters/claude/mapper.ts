@@ -61,8 +61,8 @@ export function mapClaudeEntries(entries: ParsedClaudeEntry[]): UsageEvent[] {
       inputTokens: entry.inputTokens,
       outputTokens: entry.outputTokens,
       cachedTokens: entry.cachedTokens,
-      writtenTokens: 0,
-      costUsd: estimateCost(normalizedModel, entry.inputTokens, entry.outputTokens, entry.cachedTokens, pricing),
+      writtenTokens: entry.writtenTokens,
+      costUsd: estimateCost(normalizedModel, entry.inputTokens, entry.outputTokens, entry.cachedTokens, entry.writtenTokens, pricing),
       callCount: 1,
       toolName: toolNames.length > 0 ? toolNames.join(', ') : undefined,
       shellCommand: entry.bashCommand,
@@ -76,10 +76,10 @@ function estimateCost(
   inputTokens: number,
   outputTokens: number,
   cachedTokens: number,
+  writtenTokens: number,
   pricing: Record<string, ModelPricing> | null,
 ): number {
   if (!pricing || !pricing[model]) return 0;
   const p = pricing[model];
-  const effectiveInput = Math.max(0, inputTokens - cachedTokens);
-  return effectiveInput * p.input + outputTokens * p.output + cachedTokens * p.cachedInput;
+  return inputTokens * p.input + outputTokens * p.output + cachedTokens * p.cachedInput + writtenTokens * p.cachedWrite;
 }

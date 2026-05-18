@@ -32,6 +32,7 @@ export type ParsedClaudeEntry = {
   inputTokens: number;
   outputTokens: number;
   cachedTokens: number;
+  writtenTokens: number;
   tools: string[];
   bashCommand?: string;
 };
@@ -100,7 +101,8 @@ export async function parseJsonlFile(
       model,
       inputTokens: usage.input_tokens ?? 0,
       outputTokens: usage.output_tokens ?? 0,
-      cachedTokens: (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0),
+      cachedTokens: usage.cache_read_input_tokens ?? 0,
+      writtenTokens: usage.cache_creation_input_tokens ?? 0,
       tools,
       bashCommand,
     });

@@ -95,7 +95,7 @@ export class SqliteReaderFallback {
               provider: d.providerID ?? 'unknown',
               inputTokens: tokens.input ?? 0,
               outputTokens: tokens.output ?? 0,
-              cachedTokens: (cache.read ?? 0) + (cache.write ?? 0),
+              cachedTokens: cache.read ?? 0,
               writtenTokens: cache.write ?? 0,
               costUsd: d.cost ?? 0,
               createdAt: new Date(Number(row.time_created)).toISOString(),

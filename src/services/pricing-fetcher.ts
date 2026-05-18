@@ -11,12 +11,14 @@ export interface ModelPricing {
   input: number;
   output: number;
   cachedInput: number;
+  cachedWrite: number;
 }
 
 type LiteLLMEntry = {
   input_cost_per_token?: number;
   output_cost_per_token?: number;
   cache_read_input_token_cost?: number;
+  cache_creation_input_token_cost?: number;
   mode?: string;
   litellm_provider?: string;
 };
@@ -36,8 +38,8 @@ const MODEL_KEY_MAP: Record<string, string[]> = {
   'openai/o4':            ['o4'],
   'anthropic/claude-opus-4':     ['claude-opus-4-1', 'claude-opus-4-0', 'claude-opus-4-20250514', 'claude-opus-4-1-20250805'],
   'anthropic/claude-sonnet-4':   ['claude-sonnet-4-5', 'claude-sonnet-4-5-20250929', 'claude-sonnet-4-20250514'],
-  'anthropic/claude-3.5-sonnet': ['claude-3-5-sonnet-20241022', 'claude-3-5-sonnet-20240620', 'claude-3-5-sonnet-latest'],
-  'anthropic/claude-3.5-haiku':  ['claude-3-5-haiku-20241022', 'claude-3-5-haiku-latest'],
+  'anthropic/claude-3.5-sonnet': ['anthropic.claude-3-5-sonnet-20241022-v2:0', 'anthropic.claude-3-5-sonnet-20240620-v1:0'],
+  'anthropic/claude-3.5-haiku':  ['anthropic.claude-3-5-haiku-20241022-v1:0'],
   'anthropic/claude-3-opus':     ['claude-3-opus-20240229'],
   'anthropic/claude':            ['claude-sonnet-4-5', 'claude-3-5-sonnet-20241022'],
   'google/gemini-2.5-pro':   ['gemini-2.5-pro'],
@@ -83,7 +85,8 @@ function extractPricing(data: LiteLLMPricing): Record<string, ModelPricing> {
         result[ourModel] = {
           input: entry.input_cost_per_token,
           output: entry.output_cost_per_token,
-          cachedInput: entry.cache_read_input_token_cost ?? entry.input_cost_per_token * 0.5,
+          cachedInput: entry.cache_read_input_token_cost ?? entry.input_cost_per_token * 0.1,
+          cachedWrite: entry.cache_creation_input_token_cost ?? entry.input_cost_per_token * 1.25,
         };
         break;
       }

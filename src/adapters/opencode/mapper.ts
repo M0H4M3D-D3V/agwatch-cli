@@ -64,7 +64,7 @@ export function mapToUsageEvents(
       outputTokens: msg.outputTokens ?? 0,
       cachedTokens: msg.cachedTokens ?? 0,
       writtenTokens: msg.writtenTokens ?? 0,
-      costUsd: msg.costUsd > 0 ? msg.costUsd : estimateCost(normalizedModel, msg.inputTokens ?? 0, msg.outputTokens ?? 0, msg.cachedTokens ?? 0, dynamicPricing),
+      costUsd: msg.costUsd > 0 ? msg.costUsd : estimateCost(normalizedModel, msg.inputTokens ?? 0, msg.outputTokens ?? 0, msg.cachedTokens ?? 0, msg.writtenTokens ?? 0, dynamicPricing),
       callCount: 1,
       toolName: toolNames.length > 0 ? toolNames.join(', ') : undefined,
       shellCommand,
@@ -163,10 +163,10 @@ function estimateCost(
   inputTokens: number,
   outputTokens: number,
   cachedTokens: number,
+  writtenTokens: number,
   dynamicPricing: Record<string, ModelPricing> | null,
 ): number {
   if (!dynamicPricing || !dynamicPricing[model]) return 0;
   const p = dynamicPricing[model];
-  const effectiveInput = Math.max(0, inputTokens - cachedTokens);
-  return effectiveInput * p.input + outputTokens * p.output + cachedTokens * p.cachedInput;
+  return inputTokens * p.input + outputTokens * p.output + cachedTokens * p.cachedInput + writtenTokens * p.cachedWrite;
 }
