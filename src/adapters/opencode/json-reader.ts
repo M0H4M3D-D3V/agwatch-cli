@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { TimeRangeFilter, RawSession, RawMessage, RawPart } from '../../domain/types.js';
 import { findOpenCodeJsonDir } from './paths.js';
 import { isInRange } from '../../utils/dates.js';
+import { nonNegativeNumber } from '../../utils/numbers.js';
 
 function logPermError(location: string, err: unknown): void {
   if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'EACCES') {
@@ -76,11 +77,11 @@ export class JsonReader {
             role: raw.role ?? '',
             model: raw.model ?? 'unknown',
             provider: raw.provider ?? 'unknown',
-            inputTokens: Number(raw.input_tokens ?? raw.inputTokens ?? 0),
-            outputTokens: Number(raw.output_tokens ?? raw.outputTokens ?? 0),
-            cachedTokens: Number(raw.cached_tokens ?? raw.cachedTokens ?? 0),
-            writtenTokens: Number(raw.written_tokens ?? raw.writtenTokens ?? 0),
-            costUsd: Number(raw.cost_usd ?? raw.costUsd ?? 0),
+            inputTokens: nonNegativeNumber(raw.input_tokens ?? raw.inputTokens),
+            outputTokens: nonNegativeNumber(raw.output_tokens ?? raw.outputTokens),
+            cachedTokens: nonNegativeNumber(raw.cached_tokens ?? raw.cachedTokens),
+            writtenTokens: nonNegativeNumber(raw.written_tokens ?? raw.writtenTokens),
+            costUsd: nonNegativeNumber(raw.cost_usd ?? raw.costUsd),
             createdAt: raw.created_at ?? raw.createdAt ?? '',
             metadata: raw.metadata,
           });

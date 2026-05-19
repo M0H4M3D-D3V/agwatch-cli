@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import https from 'node:https';
 import { getPricingCacheFile } from '../utils/paths.js';
+import { nonNegativeNumber } from '../utils/numbers.js';
 
 const PRICING_URL = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json';
 const CACHE_FILE = getPricingCacheFile();
@@ -82,12 +83,16 @@ function extractPricing(data: LiteLLMPricing): Record<string, ModelPricing> {
     for (const key of litellmKeys) {
       const entry = data[key];
       if (entry && entry.input_cost_per_token != null && entry.output_cost_per_token != null) {
-        result[ourModel] = {
-          input: entry.input_cost_per_token,
-          output: entry.output_cost_per_token,
-          cachedInput: entry.cache_read_input_token_cost ?? entry.input_cost_per_token * 0.1,
-          cachedWrite: entry.cache_creation_input_token_cost ?? entry.input_cost_per_token * 1.25,
-        };
+        const input = nonNegativeNumber(entry.input_cost_per_token);
+        const output = nonNegativeNumber(entry.output_cost_per_token);
+        const cachedInput = entry.cache_read_input_token_cost == null
+          ? input * 0.1
+          : nonNegativeNumber(entry.cache_read_input_token_cost);
+        const cachedWrite = entry.cache_creation_input_token_cost == null
+          ? input * 1.25
+          : nonNegativeNumber(entry.cache_creation_input_token_cost);
+
+        result[ourModel] = { input, output, cachedInput, cachedWrite };
         break;
       }
     }
