@@ -14,7 +14,7 @@ function sumBy(items: UsageEvent[], selector: (event: UsageEvent) => number): nu
 
 export function aggregateByDay(events: UsageEvent[]): DailyRow[] {
   const groups = groupBy(events, (e) => toDayKey(e.ts));
-  const rows: { name: string; day: string; value: number; inputTokens: number; outputTokens: number; cachedTokens: number; writtenTokens: number; costUsd: number; calls: number; sessions: string[] }[] = [];
+  const rows: (Omit<DailyRow, 'sessions' | 'percentOfMax'> & { value: number; sessions: string[] })[] = [];
 
   for (const [day, items] of groups) {
     rows.push({

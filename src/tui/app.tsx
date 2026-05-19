@@ -243,7 +243,7 @@ function colValue(col: ColSpec, row: AggregateRow | DailyRow): string {
     case 'name':     return fitL(row.name, w);
     case 'in':       return fitR(tok(row.inputTokens), w);
     case 'out':      return fitR(tok(row.outputTokens), w);
-    case 'cache':    return fitR(tok((row.cachedTokens ?? 0) + (row.writtenTokens ?? 0)), w);
+    case 'cache':    return fitR(tok(row.cachedTokens + row.writtenTokens), w);
     case 'cost':     return fitR(formatMoney(row.costUsd), w);
     case 'calls':    return fitR(cint(row.calls), w);
     case 'sessions': return fitR(cint(row.sessions), w);
@@ -384,7 +384,7 @@ interface Layout { dw: number; wide: boolean; pw: number; iw: number; bw: number
 
 function computeLayout(termWidth: number): Layout {
   let dw     = Math.min(300, Math.max(60, termWidth));
-  const wide = dw >= 120;
+  const wide = dw >= 140;
   if (wide && dw % 3 !== 0) {
     dw -= dw % 3;
   }
