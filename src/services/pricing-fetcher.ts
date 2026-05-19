@@ -2,10 +2,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import https from 'node:https';
 import { getPricingCacheFile } from '../utils/paths.js';
+import { nonNegativeNumber } from '../utils/numbers.js';
 
 const PRICING_URL = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json';
 const CACHE_FILE = getPricingCacheFile();
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const CACHE_SCHEMA_VERSION = 2;
 
 export interface ModelPricing {
   input: number;
@@ -26,6 +28,7 @@ type LiteLLMEntry = {
 type LiteLLMPricing = Record<string, LiteLLMEntry>;
 
 const MODEL_KEY_MAP: Record<string, string[]> = {
+  'openai/gpt-5.5':       ['gpt-5.5'],
   'openai/gpt-5.4':       ['gpt-5.4'],
   'openai/gpt-5.3-codex': ['gpt-5.3-codex'],
   'openai/gpt-5':         ['gpt-5'],
@@ -47,6 +50,9 @@ const MODEL_KEY_MAP: Record<string, string[]> = {
   'google/gemini':           ['gemini-2.5-pro'],
   'xai/grok':                ['xai/grok-4', 'xai/grok-3', 'xai/grok-2'],
   'glm-5.1':                 ['zai/glm-5'],
+  'kimi-k2.6':            ['moonshot/kimi-k2.6'],
+  'minimax-m2.5':         ['minimax.minimax-m2.5', 'openrouter/minimax/minimax-m2.5'],
+  'qwen3.6-plus':         ['openrouter/qwen/qwen3.6-plus'],
 };
 
 let cachedPricing: Record<string, ModelPricing> | null = null;
@@ -75,19 +81,69 @@ function fetchJson(url: string): Promise<LiteLLMPricing> {
   });
 }
 
+function normalizePricing(value: unknown): ModelPricing | null {
+  if (!value || typeof value !== 'object') return null;
+  const entry = value as Partial<ModelPricing>;
+  const input = nonNegativeNumber(entry.input);
+  const output = nonNegativeNumber(entry.output);
+  if (input === 0 && output === 0) return null;
+  const cachedInput = entry.cachedInput == null ? input * 0.1 : nonNegativeNumber(entry.cachedInput);
+  const cachedWrite = entry.cachedWrite == null ? input * 1.25 : nonNegativeNumber(entry.cachedWrite);
+  return { input, output, cachedInput, cachedWrite };
+}
+
+function pricingFromLiteLLMEntry(entry: LiteLLMEntry): ModelPricing | null {
+  if (entry.input_cost_per_token == null || entry.output_cost_per_token == null) return null;
+  const input = nonNegativeNumber(entry.input_cost_per_token);
+  const output = nonNegativeNumber(entry.output_cost_per_token);
+  if (input === 0 && output === 0) return null;
+  const cachedInput = entry.cache_read_input_token_cost == null
+    ? input * 0.1
+    : nonNegativeNumber(entry.cache_read_input_token_cost);
+  const cachedWrite = entry.cache_creation_input_token_cost == null
+    ? input * 1.25
+    : nonNegativeNumber(entry.cache_creation_input_token_cost);
+
+  return { input, output, cachedInput, cachedWrite };
+}
+
+function pricingAliases(key: string): string[] {
+  const aliases = new Set<string>();
+  const lower = key.toLowerCase();
+  aliases.add(lower);
+
+  const slashParts = lower.split('/');
+  const lastSlashPart = slashParts[slashParts.length - 1] ?? lower;
+  aliases.add(lastSlashPart);
+
+  const dotParts = lastSlashPart.split('.');
+  aliases.add(dotParts[dotParts.length - 1] ?? lastSlashPart);
+
+  for (const alias of [...aliases]) {
+    if (alias.endsWith('-free')) aliases.add(alias.slice(0, -5));
+  }
+
+  return [...aliases].filter(Boolean);
+}
+
 function extractPricing(data: LiteLLMPricing): Record<string, ModelPricing> {
   const result: Record<string, ModelPricing> = {};
+
+  for (const [key, entry] of Object.entries(data)) {
+    const pricing = pricingFromLiteLLMEntry(entry);
+    if (!pricing) continue;
+    for (const alias of pricingAliases(key)) {
+      result[alias] ??= pricing;
+    }
+  }
 
   for (const [ourModel, litellmKeys] of Object.entries(MODEL_KEY_MAP)) {
     for (const key of litellmKeys) {
       const entry = data[key];
-      if (entry && entry.input_cost_per_token != null && entry.output_cost_per_token != null) {
-        result[ourModel] = {
-          input: entry.input_cost_per_token,
-          output: entry.output_cost_per_token,
-          cachedInput: entry.cache_read_input_token_cost ?? entry.input_cost_per_token * 0.1,
-          cachedWrite: entry.cache_creation_input_token_cost ?? entry.input_cost_per_token * 1.25,
-        };
+      if (entry) {
+        const pricing = pricingFromLiteLLMEntry(entry);
+        if (!pricing) continue;
+        result[ourModel] = pricing;
         break;
       }
     }
@@ -96,13 +152,19 @@ function extractPricing(data: LiteLLMPricing): Record<string, ModelPricing> {
   return result;
 }
 
-function readCache(): { pricing: Record<string, ModelPricing>; ts: number } | null {
+function readCache(): { pricing: Record<string, ModelPricing>; ts: number; schemaVersion?: number } | null {
   try {
     if (!fs.existsSync(CACHE_FILE)) return null;
     const raw = fs.readFileSync(CACHE_FILE, 'utf8');
     const parsed = JSON.parse(raw);
     if (!parsed.ts || !parsed.pricing) return null;
-    return parsed;
+    const pricing: Record<string, ModelPricing> = {};
+    for (const [key, value] of Object.entries(parsed.pricing as Record<string, unknown>)) {
+      const normalized = normalizePricing(value);
+      if (normalized) pricing[key] = normalized;
+    }
+    if (Object.keys(pricing).length === 0) return null;
+    return { ts: Number(parsed.ts), pricing, schemaVersion: Number(parsed.schemaVersion ?? 1) };
   } catch {
     return null;
   }
@@ -112,7 +174,7 @@ function writeCache(pricing: Record<string, ModelPricing>): void {
   try {
     const dir = path.dirname(CACHE_FILE);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(CACHE_FILE, JSON.stringify({ ts: Date.now(), pricing }, null, 2), 'utf8');
+    fs.writeFileSync(CACHE_FILE, JSON.stringify({ schemaVersion: CACHE_SCHEMA_VERSION, ts: Date.now(), pricing }, null, 2), 'utf8');
   } catch {}
 }
 
@@ -121,7 +183,7 @@ export async function fetchPricing(force = false): Promise<Record<string, ModelP
 
   const cache = readCache();
 
-  if (!force && cache && Date.now() - cache.ts < CACHE_TTL_MS) {
+  if (!force && cache && cache.schemaVersion === CACHE_SCHEMA_VERSION && Date.now() - cache.ts < CACHE_TTL_MS) {
     cachedPricing = cache.pricing;
     cachedTimestamp = cache.ts;
     return cachedPricing;

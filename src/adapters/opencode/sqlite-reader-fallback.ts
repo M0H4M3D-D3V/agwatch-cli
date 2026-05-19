@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import initSqlJs, { type Database as SqlJsDatabase } from 'sql.js';
 import type { TimeRangeFilter, RawSession, RawMessage, RawPart } from '../../domain/types.js';
 import { findOpenCodeDbPath } from './paths.js';
+import { nonNegativeNumber } from '../../utils/numbers.js';
 
 export class SqliteReaderFallback {
   private db: SqlJsDatabase | null = null;
@@ -93,11 +94,11 @@ export class SqliteReaderFallback {
               role: 'assistant',
               model: d.modelID ?? 'unknown',
               provider: d.providerID ?? 'unknown',
-              inputTokens: tokens.input ?? 0,
-              outputTokens: tokens.output ?? 0,
-              cachedTokens: cache.read ?? 0,
-              writtenTokens: cache.write ?? 0,
-              costUsd: d.cost ?? 0,
+              inputTokens: nonNegativeNumber(tokens.input),
+              outputTokens: nonNegativeNumber(tokens.output),
+              cachedTokens: nonNegativeNumber(cache.read),
+              writtenTokens: nonNegativeNumber(cache.write),
+              costUsd: nonNegativeNumber(d.cost),
               createdAt: new Date(Number(row.time_created)).toISOString(),
               metadata: {
                 agent: d.agent,

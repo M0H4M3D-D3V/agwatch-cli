@@ -1,10 +1,15 @@
 import type { UsageEvent, AggregateRow, DailyRow } from '../domain/types.js';
 import { groupBy, unique } from '../utils/group.js';
 import { toDayKey } from '../utils/dates.js';
+import { nonNegativeNumber } from '../utils/numbers.js';
 
 function computePercentOfMax(rows: { value: number }[]): number[] {
-  const maxVal = Math.max(...rows.map((r) => r.value), 0);
-  return rows.map((r) => (maxVal > 0 ? (r.value / maxVal) * 100 : 0));
+  const maxVal = Math.max(...rows.map((r) => nonNegativeNumber(r.value)), 0);
+  return rows.map((r) => (maxVal > 0 ? (nonNegativeNumber(r.value) / maxVal) * 100 : 0));
+}
+
+function sumBy(items: UsageEvent[], selector: (event: UsageEvent) => number): number {
+  return items.reduce((sum, event) => sum + nonNegativeNumber(selector(event)), 0);
 }
 
 export function aggregateByDay(events: UsageEvent[]): DailyRow[] {
@@ -15,13 +20,13 @@ export function aggregateByDay(events: UsageEvent[]): DailyRow[] {
     rows.push({
       name: day,
       day,
-      value: items.reduce((s, e) => s + e.costUsd, 0),
-      inputTokens: items.reduce((s, e) => s + e.inputTokens, 0),
-      outputTokens: items.reduce((s, e) => s + e.outputTokens, 0),
-      cachedTokens: items.reduce((s, e) => s + e.cachedTokens, 0),
-      writtenTokens: items.reduce((s, e) => s + e.writtenTokens, 0),
-      costUsd: items.reduce((s, e) => s + e.costUsd, 0),
-      calls: items.reduce((s, e) => s + e.callCount, 0),
+      value: sumBy(items, (e) => e.costUsd),
+      inputTokens: sumBy(items, (e) => e.inputTokens),
+      outputTokens: sumBy(items, (e) => e.outputTokens),
+      cachedTokens: sumBy(items, (e) => e.cachedTokens),
+      writtenTokens: sumBy(items, (e) => e.writtenTokens),
+      costUsd: sumBy(items, (e) => e.costUsd),
+      calls: sumBy(items, (e) => e.callCount),
       sessions: items.map((e) => e.sessionId),
     });
   }
@@ -51,7 +56,7 @@ export function aggregateByProject(events: UsageEvent[]): AggregateRow[] {
   for (const [project, items] of groups) {
     rows.push({
       name: project,
-      value: items.reduce((s, e) => s + e.costUsd, 0),
+      value: sumBy(items, (e) => e.costUsd),
     });
   }
 
@@ -62,12 +67,12 @@ export function aggregateByProject(events: UsageEvent[]): AggregateRow[] {
     const items = groups.get(r.name) ?? [];
     return {
       name: r.name,
-      inputTokens: items.reduce((s, e) => s + e.inputTokens, 0),
-      outputTokens: items.reduce((s, e) => s + e.outputTokens, 0),
-      cachedTokens: items.reduce((s, e) => s + e.cachedTokens, 0),
-      writtenTokens: items.reduce((s, e) => s + e.writtenTokens, 0),
-      costUsd: items.reduce((s, e) => s + e.costUsd, 0),
-      calls: items.reduce((s, e) => s + e.callCount, 0),
+      inputTokens: sumBy(items, (e) => e.inputTokens),
+      outputTokens: sumBy(items, (e) => e.outputTokens),
+      cachedTokens: sumBy(items, (e) => e.cachedTokens),
+      writtenTokens: sumBy(items, (e) => e.writtenTokens),
+      costUsd: sumBy(items, (e) => e.costUsd),
+      calls: sumBy(items, (e) => e.callCount),
       sessions: unique(items.map((e) => e.sessionId)).length,
       percentOfMax: pcts[i],
     };
@@ -81,7 +86,7 @@ export function aggregateByActivity(events: UsageEvent[]): AggregateRow[] {
   for (const [activity, items] of groups) {
     rows.push({
       name: activity,
-      value: items.reduce((s, e) => s + e.costUsd, 0),
+      value: sumBy(items, (e) => e.costUsd),
     });
   }
 
@@ -92,12 +97,12 @@ export function aggregateByActivity(events: UsageEvent[]): AggregateRow[] {
     const items = groups.get(r.name) ?? [];
     return {
       name: r.name,
-      inputTokens: items.reduce((s, e) => s + e.inputTokens, 0),
-      outputTokens: items.reduce((s, e) => s + e.outputTokens, 0),
-      cachedTokens: items.reduce((s, e) => s + e.cachedTokens, 0),
-      writtenTokens: items.reduce((s, e) => s + e.writtenTokens, 0),
-      costUsd: items.reduce((s, e) => s + e.costUsd, 0),
-      calls: items.reduce((s, e) => s + e.callCount, 0),
+      inputTokens: sumBy(items, (e) => e.inputTokens),
+      outputTokens: sumBy(items, (e) => e.outputTokens),
+      cachedTokens: sumBy(items, (e) => e.cachedTokens),
+      writtenTokens: sumBy(items, (e) => e.writtenTokens),
+      costUsd: sumBy(items, (e) => e.costUsd),
+      calls: sumBy(items, (e) => e.callCount),
       sessions: 0,
       percentOfMax: pcts[i],
     };
@@ -111,7 +116,7 @@ export function aggregateByModel(events: UsageEvent[]): AggregateRow[] {
   for (const [model, items] of groups) {
     rows.push({
       name: model,
-      value: items.reduce((s, e) => s + e.costUsd, 0),
+      value: sumBy(items, (e) => e.costUsd),
     });
   }
 
@@ -122,12 +127,12 @@ export function aggregateByModel(events: UsageEvent[]): AggregateRow[] {
     const items = groups.get(r.name) ?? [];
     return {
       name: r.name,
-      inputTokens: items.reduce((s, e) => s + e.inputTokens, 0),
-      outputTokens: items.reduce((s, e) => s + e.outputTokens, 0),
-      cachedTokens: items.reduce((s, e) => s + e.cachedTokens, 0),
-      writtenTokens: items.reduce((s, e) => s + e.writtenTokens, 0),
-      costUsd: items.reduce((s, e) => s + e.costUsd, 0),
-      calls: items.reduce((s, e) => s + e.callCount, 0),
+      inputTokens: sumBy(items, (e) => e.inputTokens),
+      outputTokens: sumBy(items, (e) => e.outputTokens),
+      cachedTokens: sumBy(items, (e) => e.cachedTokens),
+      writtenTokens: sumBy(items, (e) => e.writtenTokens),
+      costUsd: sumBy(items, (e) => e.costUsd),
+      calls: sumBy(items, (e) => e.callCount),
       sessions: 0,
       percentOfMax: pcts[i],
     };
@@ -142,7 +147,7 @@ export function aggregateByTool(events: UsageEvent[]): AggregateRow[] {
   for (const [tool, items] of groups) {
     rows.push({
       name: tool,
-      value: items.reduce((s, e) => s + e.callCount, 0),
+      value: sumBy(items, (e) => e.callCount),
     });
   }
 
@@ -156,7 +161,7 @@ export function aggregateByTool(events: UsageEvent[]): AggregateRow[] {
     cachedTokens: 0,
     writtenTokens: 0,
     costUsd: 0,
-    calls: groups.get(r.name)!.reduce((s, e) => s + e.callCount, 0),
+    calls: sumBy(groups.get(r.name)!, (e) => e.callCount),
     sessions: 0,
     percentOfMax: pcts[i],
   }));
@@ -170,7 +175,7 @@ export function aggregateByShellCommand(events: UsageEvent[]): AggregateRow[] {
   for (const [cmd, items] of groups) {
     rows.push({
       name: cmd,
-      value: items.reduce((s, e) => s + e.callCount, 0),
+      value: sumBy(items, (e) => e.callCount),
     });
   }
 
@@ -184,7 +189,7 @@ export function aggregateByShellCommand(events: UsageEvent[]): AggregateRow[] {
     cachedTokens: 0,
     writtenTokens: 0,
     costUsd: 0,
-    calls: groups.get(r.name)!.reduce((s, e) => s + e.callCount, 0),
+    calls: sumBy(groups.get(r.name)!, (e) => e.callCount),
     sessions: 0,
     percentOfMax: pcts[i],
   }));
@@ -198,7 +203,7 @@ export function aggregateByMcpServer(events: UsageEvent[]): AggregateRow[] {
   for (const [server, items] of groups) {
     rows.push({
       name: server,
-      value: items.reduce((s, e) => s + e.callCount, 0),
+      value: sumBy(items, (e) => e.callCount),
     });
   }
 
@@ -212,7 +217,7 @@ export function aggregateByMcpServer(events: UsageEvent[]): AggregateRow[] {
     cachedTokens: 0,
     writtenTokens: 0,
     costUsd: 0,
-    calls: groups.get(r.name)!.reduce((s, e) => s + e.callCount, 0),
+    calls: sumBy(groups.get(r.name)!, (e) => e.callCount),
     sessions: 0,
     percentOfMax: pcts[i],
   }));

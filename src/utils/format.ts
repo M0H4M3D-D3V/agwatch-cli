@@ -1,26 +1,30 @@
+import { finiteNumber, nonNegativeNumber } from './numbers.js';
+
 export function formatMoney(value: number): string {
-  if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(2)}M`;
-  if (value >= 1_000) return `$${(value / 1_000).toFixed(2)}K`;
-  return `$${value.toFixed(2)}`;
+  const safeValue = finiteNumber(value);
+  if (safeValue >= 1_000_000) return `$${(safeValue / 1_000_000).toFixed(2)}M`;
+  if (safeValue >= 1_000) return `$${(safeValue / 1_000).toFixed(2)}K`;
+  return `$${safeValue.toFixed(2)}`;
 }
 
 export function formatInt(value: number): string {
-  return value.toLocaleString('en-US');
+  return finiteNumber(value).toLocaleString('en-US');
 }
 
 export function formatTokenCount(value: number): string {
-  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(1)}B`;
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
-  return value.toString();
+  const safeValue = finiteNumber(value);
+  if (safeValue >= 1_000_000_000) return `${(safeValue / 1_000_000_000).toFixed(1)}B`;
+  if (safeValue >= 1_000_000) return `${(safeValue / 1_000_000).toFixed(1)}M`;
+  if (safeValue >= 1_000) return `${(safeValue / 1_000).toFixed(1)}K`;
+  return safeValue.toString();
 }
 
 export function formatPercent(value: number, decimals = 0): string {
-  return `${value.toFixed(decimals)}%`;
+  return `${finiteNumber(value).toFixed(decimals)}%`;
 }
 
 export function formatDuration(ms: number): string {
-  const seconds = Math.floor(ms / 1000);
+  const seconds = Math.floor(nonNegativeNumber(ms) / 1000);
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
@@ -44,7 +48,7 @@ export function padLeft(str: string, len: number): string {
 }
 
 export function renderProgressBar(pct: number, width: number): string {
-  const clamped = Math.max(0, Math.min(100, pct));
+  const clamped = Math.max(0, Math.min(100, finiteNumber(pct)));
   const filled = Math.round((clamped / 100) * width);
   const empty = width - filled;
   return '█'.repeat(filled) + '░'.repeat(empty);
