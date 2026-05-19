@@ -1,5 +1,6 @@
 import type { UsageEvent, SummaryMetrics } from '../domain/types.js';
 import { unique } from '../utils/group.js';
+import { nonNegativeNumber } from '../utils/numbers.js';
 
 export function aggregateSummary(events: UsageEvent[]): SummaryMetrics {
   if (events.length === 0) {
@@ -15,8 +16,8 @@ export function aggregateSummary(events: UsageEvent[]): SummaryMetrics {
     };
   }
 
-  const totalCost = events.reduce((sum, e) => sum + e.costUsd, 0);
-  const totalCalls = events.reduce((sum, e) => sum + e.callCount, 0);
+  const totalCost = events.reduce((sum, e) => sum + nonNegativeNumber(e.costUsd), 0);
+  const totalCalls = events.reduce((sum, e) => sum + nonNegativeNumber(e.callCount), 0);
   const sessionIds = unique(events.map((e) => e.sessionId));
   const cacheHitRate = totalCalls > 0
     ? (events.filter((e) => e.cachedTokens > 0).length / totalCalls) * 100
@@ -27,9 +28,9 @@ export function aggregateSummary(events: UsageEvent[]): SummaryMetrics {
     totalCalls,
     totalSessions: sessionIds.length,
     cacheHitRate: Math.min(cacheHitRate, 100),
-    inputTokens: events.reduce((sum, e) => sum + e.inputTokens, 0),
-    outputTokens: events.reduce((sum, e) => sum + e.outputTokens, 0),
-    cachedTokens: events.reduce((sum, e) => sum + e.cachedTokens, 0),
-    writtenTokens: events.reduce((sum, e) => sum + e.writtenTokens, 0),
+    inputTokens: events.reduce((sum, e) => sum + nonNegativeNumber(e.inputTokens), 0),
+    outputTokens: events.reduce((sum, e) => sum + nonNegativeNumber(e.outputTokens), 0),
+    cachedTokens: events.reduce((sum, e) => sum + nonNegativeNumber(e.cachedTokens), 0),
+    writtenTokens: events.reduce((sum, e) => sum + nonNegativeNumber(e.writtenTokens), 0),
   };
 }

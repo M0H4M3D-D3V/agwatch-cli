@@ -1,6 +1,7 @@
 import type { UsageEvent } from '../../domain/types.js';
 import type { ParsedClaudeEntry } from './reader.js';
 import { getCachedPricing, type ModelPricing } from '../../services/pricing-fetcher.js';
+import { nonNegativeNumber } from '../../utils/numbers.js';
 
 const CLAUDE_MODEL_MAP: Record<string, string[]> = {
   'anthropic/claude-opus-4':     ['claude-opus-4-1', 'claude-opus-4-0', 'opus-4'],
@@ -42,6 +43,10 @@ export function mapClaudeEntries(entries: ParsedClaudeEntry[]): UsageEvent[] {
   return entries.map((entry) => {
     const normalizedModel = normalizeModel(entry.model);
     const toolNames = entry.tools.map(normalizeToolName);
+    const inputTokens = nonNegativeNumber(entry.inputTokens);
+    const outputTokens = nonNegativeNumber(entry.outputTokens);
+    const cachedTokens = nonNegativeNumber(entry.cachedTokens);
+    const writtenTokens = nonNegativeNumber(entry.writtenTokens);
     let mcpServer: string | undefined;
     for (const t of entry.tools) {
       if (t.startsWith('mcp__')) {
@@ -58,11 +63,11 @@ export function mapClaudeEntries(entries: ParsedClaudeEntry[]): UsageEvent[] {
       activity: 'General',
       provider: 'anthropic',
       model: normalizedModel,
-      inputTokens: entry.inputTokens,
-      outputTokens: entry.outputTokens,
-      cachedTokens: entry.cachedTokens,
-      writtenTokens: 0,
-      costUsd: estimateCost(normalizedModel, entry.inputTokens, entry.outputTokens, entry.cachedTokens, pricing),
+      inputTokens,
+      outputTokens,
+      cachedTokens,
+      writtenTokens,
+      costUsd: estimateCost(normalizedModel, inputTokens, outputTokens, cachedTokens, writtenTokens, pricing),
       callCount: 1,
       toolName: toolNames.length > 0 ? toolNames.join(', ') : undefined,
       shellCommand: entry.bashCommand,
@@ -76,10 +81,14 @@ function estimateCost(
   inputTokens: number,
   outputTokens: number,
   cachedTokens: number,
+  writtenTokens: number,
   pricing: Record<string, ModelPricing> | null,
 ): number {
   if (!pricing || !pricing[model]) return 0;
   const p = pricing[model];
-  const effectiveInput = Math.max(0, inputTokens - cachedTokens);
-  return effectiveInput * p.input + outputTokens * p.output + cachedTokens * p.cachedInput;
+  const safeInput = nonNegativeNumber(inputTokens);
+  const safeOutput = nonNegativeNumber(outputTokens);
+  const safeCached = nonNegativeNumber(cachedTokens);
+  const safeWritten = nonNegativeNumber(writtenTokens);
+  return nonNegativeNumber(safeInput * p.input + safeOutput * p.output + safeCached * p.cachedInput + safeWritten * p.cachedWrite);
 }

@@ -1,5 +1,6 @@
 import type { RawSession, RawMessage, RawPart, UsageEvent } from '../../domain/types.js';
 import { fetchPricing, getCachedPricing, type ModelPricing } from '../../services/pricing-fetcher.js';
+import { nonNegativeNumber } from '../../utils/numbers.js';
 
 export { getCachedPricing } from '../../services/pricing-fetcher.js';
 
@@ -52,6 +53,11 @@ export function mapToUsageEvents(
     }
 
     const normalizedModel = normalizeModel(msg.model ?? '');
+    const inputTokens = nonNegativeNumber(msg.inputTokens);
+    const outputTokens = nonNegativeNumber(msg.outputTokens);
+    const cachedTokens = nonNegativeNumber(msg.cachedTokens);
+    const writtenTokens = nonNegativeNumber(msg.writtenTokens);
+    const storedCost = nonNegativeNumber(msg.costUsd);
 
     events.push({
       ts: msg.createdAt || session.createdAt,
@@ -60,11 +66,11 @@ export function mapToUsageEvents(
       activity: 'General',
       provider: normalizeProvider(msg.provider ?? ''),
       model: normalizedModel,
-      inputTokens: msg.inputTokens ?? 0,
-      outputTokens: msg.outputTokens ?? 0,
-      cachedTokens: msg.cachedTokens ?? 0,
-      writtenTokens: msg.writtenTokens ?? 0,
-      costUsd: msg.costUsd > 0 ? msg.costUsd : estimateCost(normalizedModel, msg.inputTokens ?? 0, msg.outputTokens ?? 0, msg.cachedTokens ?? 0, dynamicPricing),
+      inputTokens,
+      outputTokens,
+      cachedTokens,
+      writtenTokens,
+      costUsd: storedCost > 0 ? storedCost : estimateCost(normalizedModel, inputTokens, outputTokens, cachedTokens, writtenTokens, dynamicPricing),
       callCount: 1,
       toolName: toolNames.length > 0 ? toolNames.join(', ') : undefined,
       shellCommand,
@@ -95,6 +101,7 @@ function normalizeProvider(provider: string): string {
 function normalizeModel(model: string): string {
   const lower = (model ?? '').toLowerCase();
 
+  if (lower.includes('gpt-5.5')) return 'openai/gpt-5.5';
   if (lower.includes('gpt-5.4')) return 'openai/gpt-5.4';
   if (lower.includes('gpt-5.3-codex')) return 'openai/gpt-5.3-codex';
   if (lower.includes('gpt-5')) return 'openai/gpt-5';
@@ -119,8 +126,11 @@ function normalizeModel(model: string): string {
   if (lower.includes('gemini')) return 'google/gemini';
 
   if (lower.includes('grok')) return 'xai/grok';
+  if (lower.includes('kimi-k2.6')) return 'kimi-k2.6';
+  if (lower.includes('minimax-m2.5')) return 'minimax-m2.5';
+  if (lower.includes('qwen3.6-plus')) return 'qwen3.6-plus';
 
-  return model || 'unknown';
+  return lower || 'unknown';
 }
 
 function normalizeToolName(name: string): string {
@@ -163,10 +173,14 @@ function estimateCost(
   inputTokens: number,
   outputTokens: number,
   cachedTokens: number,
+  writtenTokens: number,
   dynamicPricing: Record<string, ModelPricing> | null,
 ): number {
   if (!dynamicPricing || !dynamicPricing[model]) return 0;
   const p = dynamicPricing[model];
-  const effectiveInput = Math.max(0, inputTokens - cachedTokens);
-  return effectiveInput * p.input + outputTokens * p.output + cachedTokens * p.cachedInput;
+  const safeInput = nonNegativeNumber(inputTokens);
+  const safeOutput = nonNegativeNumber(outputTokens);
+  const safeCached = nonNegativeNumber(cachedTokens);
+  const safeWritten = nonNegativeNumber(writtenTokens);
+  return nonNegativeNumber(safeInput * p.input + safeOutput * p.output + safeCached * p.cachedInput + safeWritten * p.cachedWrite);
 }

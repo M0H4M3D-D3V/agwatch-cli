@@ -1,5 +1,6 @@
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
+import { nonNegativeNumber } from '../../utils/numbers.js';
 
 type ClaudeMessage = {
   type: string;
@@ -32,6 +33,7 @@ export type ParsedClaudeEntry = {
   inputTokens: number;
   outputTokens: number;
   cachedTokens: number;
+  writtenTokens: number;
   tools: string[];
   bashCommand?: string;
 };
@@ -98,9 +100,10 @@ export async function parseJsonlFile(
       sessionId: obj.sessionId ?? '',
       project: projectFromCwd,
       model,
-      inputTokens: usage.input_tokens ?? 0,
-      outputTokens: usage.output_tokens ?? 0,
-      cachedTokens: (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0),
+      inputTokens: nonNegativeNumber(usage.input_tokens),
+      outputTokens: nonNegativeNumber(usage.output_tokens),
+      cachedTokens: nonNegativeNumber(usage.cache_read_input_tokens),
+      writtenTokens: nonNegativeNumber(usage.cache_creation_input_tokens),
       tools,
       bashCommand,
     });
