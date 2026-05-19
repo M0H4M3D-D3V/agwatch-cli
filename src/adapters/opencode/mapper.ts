@@ -101,6 +101,7 @@ function normalizeProvider(provider: string): string {
 function normalizeModel(model: string): string {
   const lower = (model ?? '').toLowerCase();
 
+  if (lower.includes('gpt-5.5')) return 'openai/gpt-5.5';
   if (lower.includes('gpt-5.4')) return 'openai/gpt-5.4';
   if (lower.includes('gpt-5.3-codex')) return 'openai/gpt-5.3-codex';
   if (lower.includes('gpt-5')) return 'openai/gpt-5';
@@ -125,8 +126,11 @@ function normalizeModel(model: string): string {
   if (lower.includes('gemini')) return 'google/gemini';
 
   if (lower.includes('grok')) return 'xai/grok';
+  if (lower.includes('kimi-k2.6')) return 'kimi-k2.6';
+  if (lower.includes('minimax-m2.5')) return 'minimax-m2.5';
+  if (lower.includes('qwen3.6-plus')) return 'qwen3.6-plus';
 
-  return model || 'unknown';
+  return lower || 'unknown';
 }
 
 function normalizeToolName(name: string): string {
