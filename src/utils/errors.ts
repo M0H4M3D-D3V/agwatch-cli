@@ -16,5 +16,4 @@ export function handleError(error: unknown): never {
   }
   console.error('An unexpected error occurred');
   process.exit(1);
-  throw error;
 }

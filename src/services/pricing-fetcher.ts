@@ -44,7 +44,7 @@ const MODEL_KEY_MAP: Record<string, string[]> = {
   'anthropic/claude-3.5-sonnet': ['anthropic.claude-3-5-sonnet-20241022-v2:0', 'anthropic.claude-3-5-sonnet-20240620-v1:0'],
   'anthropic/claude-3.5-haiku':  ['anthropic.claude-3-5-haiku-20241022-v1:0'],
   'anthropic/claude-3-opus':     ['claude-3-opus-20240229'],
-  'anthropic/claude':            ['claude-sonnet-4-5', 'claude-3-5-sonnet-20241022'],
+  'anthropic/claude':            ['claude-sonnet-4-5'],
   'google/gemini-2.5-pro':   ['gemini-2.5-pro'],
   'google/gemini-2.5-flash': ['gemini-2.5-flash'],
   'google/gemini':           ['gemini-2.5-pro'],
