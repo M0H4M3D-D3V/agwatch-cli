@@ -14,7 +14,7 @@ function sumBy(items: UsageEvent[], selector: (event: UsageEvent) => number): nu
 
 export function aggregateByDay(events: UsageEvent[]): DailyRow[] {
   const groups = groupBy(events, (e) => toDayKey(e.ts));
-  const rows: { name: string; day: string; value: number; inputTokens: number; outputTokens: number; costUsd: number; calls: number; sessions: string[] }[] = [];
+  const rows: { name: string; day: string; value: number; inputTokens: number; outputTokens: number; cachedTokens: number; writtenTokens: number; costUsd: number; calls: number; sessions: string[] }[] = [];
 
   for (const [day, items] of groups) {
     rows.push({
@@ -23,6 +23,8 @@ export function aggregateByDay(events: UsageEvent[]): DailyRow[] {
       value: sumBy(items, (e) => e.costUsd),
       inputTokens: sumBy(items, (e) => e.inputTokens),
       outputTokens: sumBy(items, (e) => e.outputTokens),
+      cachedTokens: sumBy(items, (e) => e.cachedTokens),
+      writtenTokens: sumBy(items, (e) => e.writtenTokens),
       costUsd: sumBy(items, (e) => e.costUsd),
       calls: sumBy(items, (e) => e.callCount),
       sessions: items.map((e) => e.sessionId),
@@ -38,6 +40,8 @@ export function aggregateByDay(events: UsageEvent[]): DailyRow[] {
     day: r.day,
     inputTokens: r.inputTokens,
     outputTokens: r.outputTokens,
+    cachedTokens: r.cachedTokens,
+    writtenTokens: r.writtenTokens,
     costUsd: r.costUsd,
     calls: r.calls,
     sessions: unique(r.sessions).length,
@@ -65,6 +69,8 @@ export function aggregateByProject(events: UsageEvent[]): AggregateRow[] {
       name: r.name,
       inputTokens: sumBy(items, (e) => e.inputTokens),
       outputTokens: sumBy(items, (e) => e.outputTokens),
+      cachedTokens: sumBy(items, (e) => e.cachedTokens),
+      writtenTokens: sumBy(items, (e) => e.writtenTokens),
       costUsd: sumBy(items, (e) => e.costUsd),
       calls: sumBy(items, (e) => e.callCount),
       sessions: unique(items.map((e) => e.sessionId)).length,
@@ -93,6 +99,8 @@ export function aggregateByActivity(events: UsageEvent[]): AggregateRow[] {
       name: r.name,
       inputTokens: sumBy(items, (e) => e.inputTokens),
       outputTokens: sumBy(items, (e) => e.outputTokens),
+      cachedTokens: sumBy(items, (e) => e.cachedTokens),
+      writtenTokens: sumBy(items, (e) => e.writtenTokens),
       costUsd: sumBy(items, (e) => e.costUsd),
       calls: sumBy(items, (e) => e.callCount),
       sessions: 0,
@@ -121,6 +129,8 @@ export function aggregateByModel(events: UsageEvent[]): AggregateRow[] {
       name: r.name,
       inputTokens: sumBy(items, (e) => e.inputTokens),
       outputTokens: sumBy(items, (e) => e.outputTokens),
+      cachedTokens: sumBy(items, (e) => e.cachedTokens),
+      writtenTokens: sumBy(items, (e) => e.writtenTokens),
       costUsd: sumBy(items, (e) => e.costUsd),
       calls: sumBy(items, (e) => e.callCount),
       sessions: 0,
@@ -148,6 +158,8 @@ export function aggregateByTool(events: UsageEvent[]): AggregateRow[] {
     name: r.name,
     inputTokens: 0,
     outputTokens: 0,
+    cachedTokens: 0,
+    writtenTokens: 0,
     costUsd: 0,
     calls: sumBy(groups.get(r.name)!, (e) => e.callCount),
     sessions: 0,
@@ -174,6 +186,8 @@ export function aggregateByShellCommand(events: UsageEvent[]): AggregateRow[] {
     name: r.name,
     inputTokens: 0,
     outputTokens: 0,
+    cachedTokens: 0,
+    writtenTokens: 0,
     costUsd: 0,
     calls: sumBy(groups.get(r.name)!, (e) => e.callCount),
     sessions: 0,
@@ -200,6 +214,8 @@ export function aggregateByMcpServer(events: UsageEvent[]): AggregateRow[] {
     name: r.name,
     inputTokens: 0,
     outputTokens: 0,
+    cachedTokens: 0,
+    writtenTokens: 0,
     costUsd: 0,
     calls: sumBy(groups.get(r.name)!, (e) => e.callCount),
     sessions: 0,

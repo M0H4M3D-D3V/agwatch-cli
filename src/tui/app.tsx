@@ -159,7 +159,7 @@ function BarCell({ value, max, width }: { value: number; max: number; width: num
 
 // ─── Column system ────────────────────────────────────────────────────────────
 
-type ColKey = 'bar' | 'day' | 'name' | 'in' | 'out' | 'cost' | 'calls' | 'sessions';
+type ColKey = 'bar' | 'day' | 'name' | 'in' | 'out' | 'cache' | 'cost' | 'calls' | 'sessions';
 
 interface ColSpec {
   key:   ColKey;
@@ -174,6 +174,7 @@ const COL_BASE: Record<ColKey, { label: string; min: number; right: boolean; gro
   name:     { label: '',         min: 8,  right: false, grow: true  },
   in:       { label: 'In',       min: 6,  right: true,  grow: true  },
   out:      { label: 'Out',      min: 6,  right: true,  grow: true  },
+  cache:    { label: 'Cache',    min: 6,  right: true,  grow: true  },
   cost:     { label: 'Cost',     min: 7,  right: true,  grow: true  },
   calls:    { label: 'Calls',    min: 7,  right: true,  grow: true  },
   sessions: { label: 'Sessions', min: 8,  right: true,  grow: true  },
@@ -242,6 +243,7 @@ function colValue(col: ColSpec, row: AggregateRow | DailyRow): string {
     case 'name':     return fitL(row.name, w);
     case 'in':       return fitR(tok(row.inputTokens), w);
     case 'out':      return fitR(tok(row.outputTokens), w);
+    case 'cache':    return fitR(tok((row.cachedTokens ?? 0) + (row.writtenTokens ?? 0)), w);
     case 'cost':     return fitR(formatMoney(row.costUsd), w);
     case 'calls':    return fitR(cint(row.calls), w);
     case 'sessions': return fitR(cint(row.sessions), w);
@@ -256,6 +258,7 @@ function colColor(key: ColKey, barColor: string): string {
     case 'name':     return C.white;
     case 'in':       return C.cyan;
     case 'out':      return C.green;
+    case 'cache':    return C.amber;
     case 'cost':     return C.gold;
     case 'calls':    return C.subtle;
     case 'sessions': return C.subtle;
@@ -394,12 +397,12 @@ function computeLayout(termWidth: number): Layout {
 // ─── Panels ───────────────────────────────────────────────────────────────────
 
 function DailyPanel({ rows, L }: { rows: DailyRow[]; L: Layout }) {
-  const cols = computeCols(L.iw, L.bw, ['day', 'bar', 'in', 'out', 'cost', 'calls']);
+  const cols = computeCols(L.iw, L.bw, ['day', 'bar', 'in', 'out', 'cache', 'cost', 'calls']);
   return <TablePanel title="Daily Activity" color={C.pDaily} cols={cols} rows={rows} pw={L.pw} metricKey="costUsd" limit={14} emptyMsg="No activity in range" />;
 }
 
 function ProjectPanel({ rows, L }: { rows: AggregateRow[]; L: Layout }) {
-  const cols = computeCols(L.iw, L.bw, ['bar', 'name', 'in', 'out', 'cost', 'sessions']);
+  const cols = computeCols(L.iw, L.bw, ['bar', 'name', 'in', 'out', 'cache', 'cost', 'sessions']);
   return <TablePanel title="By Project" color={C.pProject} cols={cols} rows={rows} pw={L.pw} metricKey="costUsd" emptyMsg="No project data" />;
 }
 
@@ -407,8 +410,8 @@ function ModelPanel({ rows, L }: { rows: AggregateRow[]; L: Layout }) {
   const cols = computeCols(
     L.iw,
     L.bw,
-    ['bar', 'name', 'in', 'out', 'cost', 'calls'],
-    { in: 5, out: 5, cost: 6, calls: 6, name: 12 },
+    ['bar', 'name', 'in', 'out', 'cache', 'cost', 'calls'],
+    { in: 5, out: 5, cache: 6, cost: 6, calls: 6, name: 12 },
   );
   const stripped = rows.map((r) => {
     const noProvider = r.name.includes('/') ? r.name.split('/').slice(1).join('/') : r.name;
@@ -418,7 +421,7 @@ function ModelPanel({ rows, L }: { rows: AggregateRow[]; L: Layout }) {
 }
 
 function ActivityPanel({ rows, L }: { rows: AggregateRow[]; L: Layout }) {
-  const cols = computeCols(L.iw, L.bw, ['bar', 'name', 'in', 'out', 'cost', 'calls']);
+  const cols = computeCols(L.iw, L.bw, ['bar', 'name', 'in', 'out', 'cache', 'cost', 'calls']);
   return <TablePanel title="By Activity" color={C.pActiv} cols={cols} rows={rows} pw={L.pw} metricKey="costUsd" emptyMsg="No activity data" />;
 }
 
