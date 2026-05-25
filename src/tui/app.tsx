@@ -1170,7 +1170,7 @@ function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refres
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
 const MIN_DASHBOARD_HEIGHT = 30;
-const TARGET_DASHBOARD_WIDTH = 180;
+const TARGET_DASHBOARD_WIDTH = 190;
 let lastAppliedHeight: number | null = null;
 let lastAppliedWidth: number | null = null;
 
