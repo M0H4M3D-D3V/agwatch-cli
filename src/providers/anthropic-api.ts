@@ -17,31 +17,9 @@ type LimitBlock = {
 
 type RawUsageResponse = Record<string, any>;
 
-const DESIGN_KEY_PATTERNS = ['seven_day_omelette', 'design_seven_day', 'designs_seven_day', 'design_weekly'];
-
-export function extractDesignLimit(raw: RawUsageResponse): LimitBlock | null {
-  for (const pattern of DESIGN_KEY_PATTERNS) {
-    const block = raw[pattern];
-    if (block && typeof block === 'object' && typeof block.utilization === 'number') {
-      return block as LimitBlock;
-    }
-  }
-  for (const key of Object.keys(raw)) {
-    const kl = key.toLowerCase();
-    if (!kl.includes('omelette') && !kl.includes('design')) continue;
-    if (DESIGN_KEY_PATTERNS.includes(key)) continue;
-    const block = raw[key];
-    if (block && typeof block === 'object' && typeof block.utilization === 'number') {
-      return block as LimitBlock;
-    }
-  }
-  return null;
-}
-
 export function parseAnthropicUsage(raw: RawUsageResponse): ProviderUsageData {
   const fiveHour = raw['five_hour'] as LimitBlock | undefined;
   const sevenDay = raw['seven_day'] as LimitBlock | undefined;
-  const designBlock = extractDesignLimit(raw);
 
   return {
     providerId: 'anthropic',
@@ -51,8 +29,6 @@ export function parseAnthropicUsage(raw: RawUsageResponse): ProviderUsageData {
     weeklyUsedPct: toPct(sevenDay?.utilization),
     sessionResetDate: formatIsoReset(fiveHour?.resets_at ?? null),
     weeklyResetDate: formatIsoReset(sevenDay?.resets_at ?? null),
-    designWeeklyUsedPct: toPct(designBlock?.utilization),
-    designWeeklyResetDate: formatIsoReset(designBlock?.resets_at ?? null),
     scrapedAt: Date.now(),
   };
 }
@@ -74,9 +50,6 @@ function isValidUsagePayload(raw: RawUsageResponse | undefined): boolean {
     typeof sevenDay.resets_at === 'string';
 
   if (hasFiveHour || hasSevenDay) return true;
-
-  const design = extractDesignLimit(raw);
-  if (design && typeof design.utilization === 'number') return true;
 
   return false;
 }

@@ -575,13 +575,9 @@ function ProvidersPanel({ width, providers, loading, loadingText, spinner, statu
     const dWk = colData(p.weeklyUsedPct, cw);
     const hasMo = p.monthlyUsedPct != null;
     const dMo = colData(hasMo ? p.monthlyUsedPct! : 0, cw);
-    const hasDesignWk = p.designWeeklyUsedPct != null;
-    const dDesWk = colData(p.designWeeklyUsedPct ?? 0, cw);
-    return { p, cw, ...d5h, segsWk: dWk.segs, segsMo: dMo.segs, hasMo, segsDesWk: dDesWk.segs, hasDesignWk };
+    return { p, cw, ...d5h, segsWk: dWk.segs, segsMo: dMo.segs, hasMo };
   });
   const anyHasMo = items.some((item) => item.hasMo);
-  const anyHasDesignWk = items.some((item) => item.hasDesignWk);
-  const anyHasBothMoAndDesignWk = items.some((item) => item.hasMo && item.hasDesignWk);
 
   function BarRow({ segs, label, pct, reset }: {
     segs: { str: string; color: string }[];
@@ -661,32 +657,13 @@ function ProvidersPanel({ width, providers, loading, loadingText, spinner, statu
       })()}
       <FullRow renderCell={(item) => <BarRow segs={item.segs} label="5h" pct={item.p.sessionUsedPct} reset={item.p.sessionResetDate} />} />
       <FullRow renderCell={(item) => <BarRow segs={item.segsWk} label="Wk" pct={item.p.weeklyUsedPct} reset={item.p.weeklyResetDate} />} />
-      {anyHasBothMoAndDesignWk ? (
-        <>
-          {anyHasMo ? (
-            <FullRow renderCell={(item) =>
-              item.hasMo
-                ? <BarRow segs={item.segsMo} label="Mo" pct={item.p.monthlyUsedPct!} reset={item.p.monthlyResetDate!} />
-                : <Box width={item.cw} />
-            } />
-          ) : null}
-          {anyHasDesignWk ? (
-            <FullRow renderCell={(item) =>
-              item.hasDesignWk
-                ? <BarRow segs={item.segsDesWk} label="DWk" pct={item.p.designWeeklyUsedPct ?? 0} reset={item.p.designWeeklyResetDate ?? '--'} />
-                : <Box width={item.cw} />
-            } />
-          ) : null}
-        </>
-      ) : (
+      {anyHasMo ? (
         <FullRow renderCell={(item) =>
           item.hasMo
             ? <BarRow segs={item.segsMo} label="Mo" pct={item.p.monthlyUsedPct!} reset={item.p.monthlyResetDate!} />
-            : item.hasDesignWk
-              ? <BarRow segs={item.segsDesWk} label="DWk" pct={item.p.designWeeklyUsedPct ?? 0} reset={item.p.designWeeklyResetDate ?? '--'} />
-              : <Box width={item.cw} />
+            : <Box width={item.cw} />
         } />
-      )}
+      ) : null}
     </Box>
   );
 }
@@ -1210,7 +1187,7 @@ function desiredDashboardHeight(data: DashboardData, providerCount: number): num
 
   // Overview: 2 borders + title + 2 metric rows.
   const overview = 5;
-  // Providers panel: 2 borders + title + names row + up to 4 bar rows (5h, Wk, Mo, DWk).
+  // Providers panel: 2 borders + title + names row + up to 3 bar rows (5h, Wk, Mo).
   const providers = providerCount > 0 ? 8 : 4;
 
   const topRow = Math.max(
@@ -1276,10 +1253,6 @@ export async function runInkDashboard(
         if (p.id === 'opencodego') {
           base.monthlyUsedPct = 0;
           base.monthlyResetDate = '--';
-        }
-        if (p.id === 'anthropic') {
-          base.designWeeklyUsedPct = 0;
-          base.designWeeklyResetDate = '--';
         }
         return base;
       });

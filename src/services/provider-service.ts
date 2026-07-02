@@ -88,7 +88,6 @@ export async function scrapeAllProvidersWithOptions(options: { allowVisibleFallb
       } else {
         const extra: string[] = [];
         if (data.monthlyUsedPct != null) extra.push(`mo=${data.monthlyUsedPct}%`);
-        if (data.designWeeklyUsedPct != null) extra.push(`dwk=${data.designWeeklyUsedPct}%`);
         const extraStr = extra.length ? ` ${extra.join(' ')}` : '';
         debugLog(`${conn.label} completed in ${ms}ms (source=${data.source ?? 'n/a'}): 5h=${data.sessionUsedPct}% wk=${data.weeklyUsedPct}%${extraStr}`);
       }

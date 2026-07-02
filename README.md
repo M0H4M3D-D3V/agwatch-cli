@@ -43,6 +43,7 @@ The default config currently supports:
 
 - `OpenCode` via SQLite or JSON-based local data
 - `Claude Code` via local JSONL project logs
+- `Codex` via local JSONL session logs
 
 ### Provider Panel
 
@@ -226,6 +227,15 @@ On first run, `agwatch` creates this file automatically.
       "paths": [
         "~/.claude/projects"
       ]
+    },
+    {
+      "id": "codex",
+      "label": "Codex",
+      "enabled": true,
+      "type": "jsonl",
+      "paths": [
+        "~/.codex/sessions"
+      ]
     }
   ],
   "providers": []
@@ -374,6 +384,10 @@ Reads session, message, and tool-call data from local OpenCode storage.
 
 Reads local JSONL project logs from the Claude Code projects directory.
 
+### Codex
+
+Reads local JSONL session logs from the Codex sessions directory.
+
 ## Architecture
 
 ```text
@@ -383,7 +397,7 @@ Data Layer -> Domain Layer -> Aggregation Layer -> Presentation Layer
 ```text
 src/
   cli/          command dispatch and argument parsing
-  adapters/     agent-specific readers for OpenCode and Claude Code
+  adapters/     agent-specific readers for OpenCode, Claude Code, and Codex
   domain/       shared types and normalization
   services/     loading, aggregation, pricing, and provider services
   tui/          Ink-based dashboard UI

@@ -2,7 +2,7 @@ import type { ProviderConnector, ProviderUsageData } from './types.js';
 import { getSupportedProvider } from '../config/providers.js';
 import { hasCookies, deleteCookies, authenticate, createScrapePageForProvider } from './browser.js';
 import { loadProviderSession } from './session.js';
-import { fetchAnthropicUsageApi, extractDesignLimit, parseAnthropicUsage } from './anthropic-api.js';
+import { fetchAnthropicUsageApi, parseAnthropicUsage } from './anthropic-api.js';
 import { getFallbackMode, shouldFallbackToBrowser } from './fallback-policy.js';
 import { ProviderScrapeError, toProviderScrapeError } from './errors.js';
 import { recordScrapeMetric } from './metrics.js';
@@ -139,17 +139,11 @@ export class AnthropicConnector implements ProviderConnector {
       }
 
       const result = parseAnthropicUsage(data);
-      const hasDesignBlock = extractDesignLimit(data) != null;
 
       const hasPrimaryUsage = result.sessionUsedPct !== 0 || result.weeklyUsedPct !== 0;
-      const hasDesignUsage = hasDesignBlock || result.designWeeklyUsedPct !== 0;
-      const hasAnyUsage = hasPrimaryUsage || hasDesignUsage;
-
       const hasPrimaryReset = result.sessionResetDate !== '--' || result.weeklyResetDate !== '--';
-      const hasDesignReset = hasDesignBlock || result.designWeeklyResetDate !== '--';
-      const hasAnyReset = hasPrimaryReset || hasDesignReset;
 
-      const parseFailed = !hasAnyUsage && !hasAnyReset;
+      const parseFailed = !hasPrimaryUsage && !hasPrimaryReset;
 
       if (parseFailed) {
         result.error = 'Could not parse Anthropic usage API response';
@@ -171,8 +165,6 @@ export class AnthropicConnector implements ProviderConnector {
       weeklyUsedPct: 0,
       sessionResetDate: '--',
       weeklyResetDate: '--',
-      designWeeklyUsedPct: 0,
-      designWeeklyResetDate: '--',
       scrapedAt: Date.now(),
       error: err.message,
       errorCode: err.code,
@@ -198,9 +190,6 @@ export class AnthropicConnector implements ProviderConnector {
       typeof sevenDay.resets_at === 'string';
 
     if (hasFiveHour || hasSevenDay) return true;
-
-    const design = extractDesignLimit(data);
-    if (design && typeof design.utilization === 'number') return true;
 
     return false;
   }

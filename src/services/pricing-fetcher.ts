@@ -30,6 +30,7 @@ type LiteLLMPricing = Record<string, LiteLLMEntry>;
 const MODEL_KEY_MAP: Record<string, string[]> = {
   'openai/gpt-5.5':       ['gpt-5.5'],
   'openai/gpt-5.4':       ['gpt-5.4'],
+  'openai/gpt-5-codex':   ['gpt-5-codex'],
   'openai/gpt-5.3-codex': ['gpt-5.3-codex'],
   'openai/gpt-5':         ['gpt-5'],
   'openai/gpt-4.1':       ['gpt-4.1'],

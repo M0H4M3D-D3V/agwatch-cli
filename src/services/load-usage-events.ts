@@ -1,6 +1,7 @@
 import type { TimeRangeFilter, UsageEvent } from '../domain/types.js';
 import { OpenCodeAdapter } from '../adapters/opencode/index.js';
 import { ClaudeAdapter } from '../adapters/claude/index.js';
+import { CodexAdapter } from '../adapters/codex/index.js';
 import { normalize } from '../domain/normalize.js';
 import { getEnabledAgents, getAgentById } from '../config/agents.js';
 import type { AgentConfig } from '../config/agents.js';
@@ -24,8 +25,13 @@ export async function loadUsageEvents(range: TimeRangeFilter, agentId?: string):
       const raw = await adapter.loadEvents(range);
       const events = normalize(raw);
       allEvents.push(...events);
-    } else if (agent.type === 'jsonl') {
+    } else if (agent.type === 'jsonl' && agent.id === 'claude') {
       const adapter = new ClaudeAdapter();
+      const raw = await adapter.loadEvents(range);
+      const events = normalize(raw);
+      allEvents.push(...events);
+    } else if (agent.type === 'jsonl' && agent.id === 'codex') {
+      const adapter = new CodexAdapter(agent);
       const raw = await adapter.loadEvents(range);
       const events = normalize(raw);
       allEvents.push(...events);

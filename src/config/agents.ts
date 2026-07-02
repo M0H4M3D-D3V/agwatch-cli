@@ -48,6 +48,15 @@ export function getDefaultConfig(): OpusageConfig {
           '~/.claude/projects',
         ],
       },
+      {
+        id: 'codex',
+        label: 'Codex',
+        enabled: true,
+        type: 'jsonl',
+        paths: [
+          '~/.codex/sessions',
+        ],
+      },
     ],
     providers: [],
   };
