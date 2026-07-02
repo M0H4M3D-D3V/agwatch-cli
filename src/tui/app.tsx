@@ -3,7 +3,8 @@ import { render, Box, Text, useInput, useApp, useWindowSize } from 'ink';
 import type { TimeRange, DashboardData, SummaryMetrics, AggregateRow, DailyRow } from '../domain/types.js';
 import { formatMoney, formatPercent } from '../utils/format.js';
 import { loadDataForRange } from '../services/load-dashboard-data.js';
-import { getEnabledAgents, loadConfig } from '../config/agents.js';
+import { getEnabledAgents, loadConfig, saveConfig } from '../config/agents.js';
+import type { DashboardResizeMode } from '../config/agents.js';
 import { SUPPORTED_PROVIDERS } from '../config/providers.js';
 import { getPricingTimestamp, formatPricingDate, refreshPricing } from '../services/pricing-fetcher.js';
 import { forceRefreshProviders, refreshProvidersBackgroundOnly } from '../services/provider-service.js';
@@ -729,7 +730,7 @@ function AgentTabs({ active, agents, width }: { active: string; agents: { id: st
 
 // ─── Status bar ───────────────────────────────────────────────────────────────
 
-function StatusBar({ width, watch }: { width: number; watch?: boolean }) {
+function StatusBar({ width, watch, resizeMode }: { width: number; watch?: boolean; resizeMode: DashboardResizeMode }) {
   const binds: [string, string][] = [
     ['q',   'quit'],
     ['1-4', 'period'],
@@ -738,6 +739,7 @@ function StatusBar({ width, watch }: { width: number; watch?: boolean }) {
     ['v',   'provider usage'],
     ['a',   'refresh all'],
     ['p',   'providers menu'],
+    ['l',   'layout menu'],
     ['↑↓',  'cycle'],
     ['←→',  'agent'],
   ];
@@ -747,6 +749,7 @@ function StatusBar({ width, watch }: { width: number; watch?: boolean }) {
     if (i < binds.length - 1) parts.push(' · ');
   });
   if (watch) parts.push(' · ', '● ', 'watch');
+  parts.push(' · ', resizeMode === 'auto' ? 'auto-resize' : 'responsive');
   const contentStr = parts.join('');
   const innerWidth = width - 4;
   const pad = Math.max(0, Math.floor((innerWidth - contentStr.length) / 2));
@@ -768,7 +771,76 @@ function StatusBar({ width, watch }: { width: number; watch?: boolean }) {
             <Text color={C.muted}>watch</Text>
           </Text>
         ) : null}
+        <Text color={C.dim}>{' · '}</Text>
+        <Text color={C.muted}>{resizeMode === 'auto' ? 'auto-resize' : 'responsive'}</Text>
       </Text>
+    </Box>
+  );
+}
+
+function LayoutModePopup({ active, width, onClose, onSelect, onQuit }: {
+  active: DashboardResizeMode;
+  width?: number;
+  onClose: () => void;
+  onSelect: (mode: DashboardResizeMode) => void;
+  onQuit?: () => void;
+}) {
+  const options: Array<{ mode: DashboardResizeMode; label: string; description: string }> = [
+    {
+      mode: 'auto',
+      label: 'Auto-resize terminal',
+      description: 'Default. agwatch resizes the terminal window to fit the full dashboard.',
+    },
+    {
+      mode: 'responsive',
+      label: 'Responsive layout',
+      description: 'Keeps your terminal size unchanged and adapts panels to the current width.',
+    },
+  ];
+
+  const initialCursor = Math.max(0, options.findIndex((option) => option.mode === active));
+  const [cursor, setCursor] = useState(initialCursor);
+
+  useInput((input, key) => {
+    if (input === 'q') {
+      onQuit?.();
+      return;
+    }
+    if (key.escape || input === 'l') {
+      onClose();
+      return;
+    }
+    if (key.upArrow) {
+      setCursor((prev) => (prev - 1 + options.length) % options.length);
+    } else if (key.downArrow) {
+      setCursor((prev) => (prev + 1) % options.length);
+    } else if (input === '\r' || key.return) {
+      onSelect(options[cursor].mode);
+    }
+  });
+
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor={C.brand} paddingX={2} paddingY={1} width={width ?? 72}>
+      <Text bold color={C.brand}>Layout Mode</Text>
+      <Box marginTop={1} flexDirection="column">
+        {options.map((option, i) => {
+          const selected = i === cursor;
+          const current = option.mode === active;
+          return (
+            <Box key={option.mode} flexDirection="column" marginTop={i === 0 ? 0 : 1}>
+              <Text>
+                <Text color={selected ? C.brand : C.dim}>{selected ? '▸ ' : '  '}</Text>
+                <Text bold color={current ? C.green : C.white}>{option.label}</Text>
+                {current ? <Text color={C.green}>  current</Text> : null}
+              </Text>
+              <Text color={C.subtle}>{'  '}{option.description}</Text>
+            </Box>
+          );
+        })}
+      </Box>
+      <Box marginTop={1}>
+        <Text color={C.muted}>[Esc/l] close   [↑↓] navigate   [Enter] apply</Text>
+      </Box>
     </Box>
   );
 }
@@ -849,12 +921,13 @@ function DashboardContent({
 
 // ─── Interactive dashboard ────────────────────────────────────────────────────
 
-function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refreshSeconds, initialProviders }: {
+function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refreshSeconds, initialProviders, initialResizeMode }: {
   initialData:      DashboardData;
   initialPeriod:    TimeRange;
   initialAgent:     string;
   refreshSeconds?:  number;
   initialProviders: ProviderUsageData[];
+  initialResizeMode: DashboardResizeMode;
 }) {
   const { exit } = useApp();
   const { columns } = useWindowSize();
@@ -867,6 +940,7 @@ function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refres
   const [loadingText, setLoadingText] = useState<string>('Loading usage data...');
   const [providers, setProviders] = useState<ProviderUsageData[]>(initialProviders);
   const [showPopup, setShowPopup] = useState(false);
+  const [showLayoutPopup, setShowLayoutPopup] = useState(false);
   const [providersLoading, setProvidersLoading] = useState(false);
   const [providersLoadingText, setProvidersLoadingText] = useState('Loading provider usage...');
   const [providersLoadingBaseText, setProvidersLoadingBaseText] = useState('Loading provider usage...');
@@ -874,6 +948,7 @@ function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refres
   const [providersSpinnerIdx, setProvidersSpinnerIdx] = useState(0);
   const [providersStatusText, setProvidersStatusText] = useState<string>('');
   const [providersStatusIsError, setProvidersStatusIsError] = useState(false);
+  const [resizeMode, setResizeMode] = useState<DashboardResizeMode>(initialResizeMode);
 
   const providerSpinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -895,11 +970,11 @@ function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refres
     try {
       const d = await loadDataForRange(p, agent === 'all' ? undefined : agent);
       setData(d);
-      resizeTerminalForData(d, providers.length);
+      if (resizeMode === 'auto') resizeTerminalForData(d, providers.length);
     } finally {
       setLoading(false);
     }
-  }, [providers.length]);
+  }, [providers.length, resizeMode]);
 
   const setProviderStatusFromRows = useCallback((rows: ProviderUsageData[]) => {
     const errors = rows.filter((row) => !!row.error).map((row) => `${row.providerLabel}: ${row.error}`);
@@ -1009,11 +1084,11 @@ function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refres
       await refreshPricing();
       const d = await loadDataForRange(period, activeAgent === 'all' ? undefined : activeAgent);
       setData(d);
-      resizeTerminalForData(d, providers.length);
+      if (resizeMode === 'auto') resizeTerminalForData(d, providers.length);
     } finally {
       setLoading(false);
     }
-  }, [loading, period, activeAgent, providers.length]);
+  }, [loading, period, activeAgent, providers.length, resizeMode]);
 
   const refreshAllData = useCallback(async () => {
     if (loading || providersLoading) return;
@@ -1033,7 +1108,7 @@ function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refres
       setData(d);
       setProviders(p);
       setProviderStatusFromRows(p);
-      resizeTerminalForData(d, p.length);
+      if (resizeMode === 'auto') resizeTerminalForData(d, p.length);
     } finally {
       setLoading(false);
       endProvidersLoading();
@@ -1046,14 +1121,26 @@ function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refres
     beginProvidersLoading,
     endProvidersLoading,
     setProviderStatusFromRows,
+    resizeMode,
   ]);
+
+  const applyResizeMode = useCallback((next: DashboardResizeMode) => {
+    setResizeMode(next);
+    setShowLayoutPopup(false);
+
+    const config = loadConfig();
+    config.dashboard = { ...(config.dashboard ?? { resizeMode: 'auto' }), resizeMode: next };
+    saveConfig(config);
+
+    if (next === 'auto') resizeTerminalForData(data, providers.length);
+  }, [data, providers.length]);
 
   useInput((input, key) => {
     if (input === 'q') {
       quitNow();
       return;
     }
-    if (showPopup) return;
+    if (showPopup || showLayoutPopup) return;
 
     const pIdx = PERIODS.indexOf(period);
     const aIdx = agents.findIndex(a => a.id === activeAgent);
@@ -1087,13 +1174,15 @@ function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refres
       refreshAllData();
     } else if (input === 'p') {
       setShowPopup(true);
+    } else if (input === 'l') {
+      setShowLayoutPopup(true);
     }
   });
 
   return (
     <Box flexDirection="column" width={L.dw}>
       <PeriodTabs active={period} width={L.dw} />
-      {showPopup ? (
+      {showPopup || showLayoutPopup ? (
         <Box
           flexDirection="column"
           borderStyle="round"
@@ -1105,14 +1194,24 @@ function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refres
           paddingY={2}
         >
           <Box>
-            <ProviderPopup
-              width={Math.min(64, L.dw - 8)}
-              onClose={() => setShowPopup(false)}
-              onQuit={quitNow}
-              onProviderChanged={async () => {
-                await forceReloadProviders('Loading provider usage...');
-              }}
-            />
+            {showPopup ? (
+              <ProviderPopup
+                width={Math.min(64, L.dw - 8)}
+                onClose={() => setShowPopup(false)}
+                onQuit={quitNow}
+                onProviderChanged={async () => {
+                  await forceReloadProviders('Loading provider usage...');
+                }}
+              />
+            ) : (
+              <LayoutModePopup
+                width={Math.min(76, L.dw - 8)}
+                active={resizeMode}
+                onClose={() => setShowLayoutPopup(false)}
+                onQuit={quitNow}
+                onSelect={applyResizeMode}
+              />
+            )}
           </Box>
         </Box>
       ) : (
@@ -1137,7 +1236,7 @@ function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refres
             />
           }
           <AgentTabs active={activeAgent} agents={agents} width={L.dw} />
-          <StatusBar width={L.dw} watch={!!refreshSeconds && refreshSeconds > 0} />
+          <StatusBar width={L.dw} watch={!!refreshSeconds && refreshSeconds > 0} resizeMode={resizeMode} />
         </>
       )}
     </Box>
@@ -1220,7 +1319,8 @@ function resizeTerminalTo(height: number, width: number): void {
   lastAppliedWidth = width;
 }
 
-function resizeTerminalForData(data: DashboardData, providerCount: number): void {
+function resizeTerminalForData(data: DashboardData, providerCount: number, resizeMode: DashboardResizeMode = 'auto'): void {
+  if (resizeMode !== 'auto') return;
   resizeTerminalTo(desiredDashboardHeight(data, providerCount), TARGET_DASHBOARD_WIDTH);
 }
 
@@ -1256,7 +1356,8 @@ export async function runInkDashboard(
         }
         return base;
       });
-      resizeTerminalForData(data, providerData.length);
+      const resizeMode = config.dashboard.resizeMode;
+      resizeTerminalForData(data, providerData.length, resizeMode);
       const { waitUntilExit } = render(
         <InteractiveDashboard
           initialData={data}
@@ -1264,6 +1365,7 @@ export async function runInkDashboard(
           initialAgent={agent}
           refreshSeconds={refreshSeconds}
           initialProviders={providerData}
+          initialResizeMode={resizeMode}
         />
       );
       await waitUntilExit();

@@ -174,6 +174,7 @@ agwatch summary --json
 | `v` | Refresh provider usage |
 | `a` | Refresh all data |
 | `p` | Open provider setup menu |
+| `l` | Open layout mode menu |
 
 ## Dashboard Panels
 
@@ -238,9 +239,14 @@ On first run, `agwatch` creates this file automatically.
       ]
     }
   ],
-  "providers": []
+  "providers": [],
+  "dashboard": {
+    "resizeMode": "auto"
+  }
 }
 ```
+
+`dashboard.resizeMode` can be `auto` or `responsive`. `auto` keeps the default behavior of resizing the terminal window for the dashboard. `responsive` keeps the terminal window unchanged and adapts the layout to the current terminal width.
 
 ### Agent Fields
 

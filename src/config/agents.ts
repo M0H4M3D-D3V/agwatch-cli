@@ -17,9 +17,16 @@ export type UserProviderConfig = {
   enabled: boolean;
 };
 
+export type DashboardResizeMode = 'auto' | 'responsive';
+
+export type DashboardConfig = {
+  resizeMode: DashboardResizeMode;
+};
+
 export type OpusageConfig = {
   agents: AgentConfig[];
   providers: UserProviderConfig[];
+  dashboard: DashboardConfig;
 };
 
 const CONFIG_DIR = getConfigDir();
@@ -59,6 +66,15 @@ export function getDefaultConfig(): OpusageConfig {
       },
     ],
     providers: [],
+    dashboard: {
+      resizeMode: 'auto',
+    },
+  };
+}
+
+function normalizeDashboardConfig(value: Partial<DashboardConfig> | undefined): DashboardConfig {
+  return {
+    resizeMode: value?.resizeMode === 'responsive' ? 'responsive' : 'auto',
   };
 }
 
@@ -83,6 +99,10 @@ export function loadConfig(): OpusageConfig {
     const config = JSON.parse(raw) as OpusageConfig;
 
     const defaults = getDefaultConfig();
+    config.agents ??= [];
+    config.providers ??= [];
+    const dashboard = normalizeDashboardConfig(config.dashboard);
+
     const existingIds = new Set(config.agents.map(a => a.id));
     let changed = false;
     for (const def of defaults.agents) {
@@ -90,6 +110,10 @@ export function loadConfig(): OpusageConfig {
         config.agents.push(def);
         changed = true;
       }
+    }
+    if (!config.dashboard || config.dashboard.resizeMode !== dashboard.resizeMode) {
+      config.dashboard = dashboard;
+      changed = true;
     }
     if (changed) saveConfig(config);
 
