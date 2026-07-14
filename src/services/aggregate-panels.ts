@@ -27,7 +27,7 @@ export function aggregateByDay(events: UsageEvent[]): DailyRow[] {
       writtenTokens: sumBy(items, (e) => e.writtenTokens),
       costUsd: sumBy(items, (e) => e.costUsd),
       calls: sumBy(items, (e) => e.callCount),
-      sessions: items.map((e) => e.sessionId),
+      sessions: items.map((e) => JSON.stringify([e.agentId, e.sessionId])),
     });
   }
 
@@ -73,7 +73,7 @@ export function aggregateByProject(events: UsageEvent[]): AggregateRow[] {
       writtenTokens: sumBy(items, (e) => e.writtenTokens),
       costUsd: sumBy(items, (e) => e.costUsd),
       calls: sumBy(items, (e) => e.callCount),
-      sessions: unique(items.map((e) => e.sessionId)).length,
+      sessions: unique(items.map((e) => JSON.stringify([e.agentId, e.sessionId]))).length,
       percentOfMax: pcts[i],
     };
   });
@@ -140,17 +140,18 @@ export function aggregateByModel(events: UsageEvent[]): AggregateRow[] {
 }
 
 export function aggregateByTool(events: UsageEvent[]): AggregateRow[] {
-  const toolEvents = events.filter((e) => e.toolName);
-  const groups = groupBy(toolEvents, (e) => e.toolName!);
-  const rows: { name: string; value: number }[] = [];
-
-  for (const [tool, items] of groups) {
-    rows.push({
-      name: tool,
-      value: sumBy(items, (e) => e.callCount),
-    });
+  const counts = new Map<string, number>();
+  for (const event of events) {
+    if (event.toolNames?.length) {
+      for (const tool of event.toolNames) {
+        counts.set(tool, (counts.get(tool) ?? 0) + 1);
+      }
+    } else if (event.toolName) {
+      counts.set(event.toolName, (counts.get(event.toolName) ?? 0) + nonNegativeNumber(event.callCount));
+    }
   }
 
+  const rows = [...counts].map(([name, value]) => ({ name, value }));
   rows.sort((a, b) => b.value - a.value);
   const pcts = computePercentOfMax(rows);
 
@@ -161,24 +162,23 @@ export function aggregateByTool(events: UsageEvent[]): AggregateRow[] {
     cachedTokens: 0,
     writtenTokens: 0,
     costUsd: 0,
-    calls: sumBy(groups.get(r.name)!, (e) => e.callCount),
+    calls: r.value,
     sessions: 0,
     percentOfMax: pcts[i],
   }));
 }
 
 export function aggregateByShellCommand(events: UsageEvent[]): AggregateRow[] {
-  const cmdEvents = events.filter((e) => e.shellCommand);
-  const groups = groupBy(cmdEvents, (e) => e.shellCommand!);
-  const rows: { name: string; value: number }[] = [];
-
-  for (const [cmd, items] of groups) {
-    rows.push({
-      name: cmd,
-      value: sumBy(items, (e) => e.callCount),
-    });
+  const counts = new Map<string, number>();
+  for (const event of events) {
+    if (event.shellCommands?.length) {
+      for (const command of event.shellCommands) counts.set(command, (counts.get(command) ?? 0) + 1);
+    } else if (event.shellCommand) {
+      counts.set(event.shellCommand, (counts.get(event.shellCommand) ?? 0) + nonNegativeNumber(event.callCount));
+    }
   }
 
+  const rows = [...counts].map(([name, value]) => ({ name, value }));
   rows.sort((a, b) => b.value - a.value);
   const pcts = computePercentOfMax(rows);
 
@@ -189,24 +189,23 @@ export function aggregateByShellCommand(events: UsageEvent[]): AggregateRow[] {
     cachedTokens: 0,
     writtenTokens: 0,
     costUsd: 0,
-    calls: sumBy(groups.get(r.name)!, (e) => e.callCount),
+    calls: r.value,
     sessions: 0,
     percentOfMax: pcts[i],
   }));
 }
 
 export function aggregateByMcpServer(events: UsageEvent[]): AggregateRow[] {
-  const mcpEvents = events.filter((e) => e.mcpServer);
-  const groups = groupBy(mcpEvents, (e) => e.mcpServer!);
-  const rows: { name: string; value: number }[] = [];
-
-  for (const [server, items] of groups) {
-    rows.push({
-      name: server,
-      value: sumBy(items, (e) => e.callCount),
-    });
+  const counts = new Map<string, number>();
+  for (const event of events) {
+    if (event.mcpServers?.length) {
+      for (const server of event.mcpServers) counts.set(server, (counts.get(server) ?? 0) + 1);
+    } else if (event.mcpServer) {
+      counts.set(event.mcpServer, (counts.get(event.mcpServer) ?? 0) + nonNegativeNumber(event.callCount));
+    }
   }
 
+  const rows = [...counts].map(([name, value]) => ({ name, value }));
   rows.sort((a, b) => b.value - a.value);
   const pcts = computePercentOfMax(rows);
 
@@ -217,7 +216,7 @@ export function aggregateByMcpServer(events: UsageEvent[]): AggregateRow[] {
     cachedTokens: 0,
     writtenTokens: 0,
     costUsd: 0,
-    calls: sumBy(groups.get(r.name)!, (e) => e.callCount),
+    calls: r.value,
     sessions: 0,
     percentOfMax: pcts[i],
   }));

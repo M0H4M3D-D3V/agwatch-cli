@@ -7,6 +7,7 @@ export type TimeRangeFilter = {
 };
 
 export type UsageEvent = {
+  agentId: string;
   ts: string;
   sessionId: string;
   project: string;
@@ -19,8 +20,11 @@ export type UsageEvent = {
   writtenTokens: number;
   costUsd: number;
   callCount: number;
+  toolNames?: string[];
   toolName?: string;
+  shellCommands?: string[];
   shellCommand?: string;
+  mcpServers?: string[];
   mcpServer?: string;
 };
 

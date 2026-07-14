@@ -4,6 +4,8 @@ export type HttpRequest = {
   headers?: Record<string, string>;
   body?: string;
   timeoutMs?: number;
+  signal?: AbortSignal;
+  redirect?: RequestRedirect;
 };
 
 export type HttpResponse<T = unknown> = {
@@ -18,7 +20,11 @@ export type HttpResponse<T = unknown> = {
 export async function httpRequest<T = unknown>(req: HttpRequest): Promise<HttpResponse<T>> {
   const controller = new AbortController();
   const timeoutMs = req.timeoutMs ?? 15_000;
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = setTimeout(() => controller.abort(new Error(`Request timed out after ${timeoutMs}ms`)), timeoutMs);
+  const onAbort = () => controller.abort(req.signal?.reason);
+
+  if (req.signal?.aborted) onAbort();
+  else req.signal?.addEventListener('abort', onAbort, { once: true });
 
   try {
     const res = await fetch(req.url, {
@@ -26,6 +32,7 @@ export async function httpRequest<T = unknown>(req: HttpRequest): Promise<HttpRe
       headers: req.headers,
       body: req.body,
       signal: controller.signal,
+      redirect: req.redirect,
     });
 
     const rawText = await res.text();
@@ -51,5 +58,6 @@ export async function httpRequest<T = unknown>(req: HttpRequest): Promise<HttpRe
     };
   } finally {
     clearTimeout(timer);
+    req.signal?.removeEventListener('abort', onAbort);
   }
 }

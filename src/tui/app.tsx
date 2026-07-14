@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { render, Box, Text, useInput, useApp, useWindowSize } from 'ink';
 import type { TimeRange, DashboardData, SummaryMetrics, AggregateRow, DailyRow } from '../domain/types.js';
 import { formatMoney, formatPercent } from '../utils/format.js';
@@ -13,6 +13,20 @@ import { closeBrowser, releaseBrowserHandles } from '../providers/browser.js';
 import { ProviderPopup } from './provider-popup.js';
 
 let fastQuitRequested = false;
+
+async function closeBrowserWithDeadline(): Promise<void> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    closeBrowser(),
+    new Promise<void>((resolve) => {
+      timeout = setTimeout(() => {
+        releaseBrowserHandles();
+        resolve();
+      }, 2_000);
+    }),
+  ]);
+  if (timeout) clearTimeout(timeout);
+}
 
 // ─── Periods ──────────────────────────────────────────────────────────────────
 
@@ -872,9 +886,20 @@ function DashboardContent({
 
   if (data.summary.totalCalls === 0) {
     return (
-      <Box borderStyle="round" borderColor={C.dim} width={dw} paddingX={2}>
-        <Text color={C.muted}>No usage data for </Text>
-        <Text color={C.white}>{PERIOD_LABELS[period]}</Text>
+      <Box flexDirection="column" width={dw}>
+        <ProvidersPanel
+          width={dw}
+          providers={providers}
+          loading={providersLoading}
+          loadingText={providersLoadingText}
+          spinner={providersSpinner}
+          statusText={providersStatusText}
+          statusIsError={providersStatusIsError}
+        />
+        <Box borderStyle="round" borderColor={C.dim} width={dw} paddingX={2}>
+          <Text color={C.muted}>No usage data for </Text>
+          <Text color={C.white}>{PERIOD_LABELS[period]}</Text>
+        </Box>
       </Box>
     );
   }
@@ -949,14 +974,16 @@ function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refres
   const [providersStatusText, setProvidersStatusText] = useState<string>('');
   const [providersStatusIsError, setProvidersStatusIsError] = useState(false);
   const [resizeMode, setResizeMode] = useState<DashboardResizeMode>(initialResizeMode);
+  const reloadGeneration = useRef(0);
+  const providerGeneration = useRef(0);
+  const providerCount = useRef(initialProviders.length);
 
   const providerSpinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
   const quitNow = useCallback(() => {
     fastQuitRequested = true;
-    releaseBrowserHandles();
     exit();
-    setTimeout(() => process.exit(0), 25);
+    void closeBrowserWithDeadline().finally(() => process.exit(0));
   }, [exit]);
 
   const agents = [
@@ -965,14 +992,16 @@ function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refres
   ];
 
   const reload = useCallback(async (p: TimeRange, agent: string, reason: string = `Loading ${PERIOD_LABELS[p]}...`) => {
+    const generation = ++reloadGeneration.current;
     setLoading(true);
     setLoadingText(reason);
     try {
       const d = await loadDataForRange(p, agent === 'all' ? undefined : agent);
+      if (generation !== reloadGeneration.current) return;
       setData(d);
       if (resizeMode === 'auto') resizeTerminalForData(d, providers.length);
     } finally {
-      setLoading(false);
+      if (generation === reloadGeneration.current) setLoading(false);
     }
   }, [providers.length, resizeMode]);
 
@@ -1003,28 +1032,34 @@ function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refres
   }, []);
 
   const reloadProviders = useCallback(async (reason: string = 'Refreshing provider usage...') => {
+    const generation = ++providerGeneration.current;
     beginProvidersLoading(reason);
     setProvidersStatusText('');
     setProvidersStatusIsError(false);
     try {
       const rows = await refreshProvidersBackgroundOnly();
+      if (generation !== providerGeneration.current) return;
+      providerCount.current = rows.length;
       setProviders(rows);
       setProviderStatusFromRows(rows);
     } finally {
-      endProvidersLoading();
+      if (generation === providerGeneration.current) endProvidersLoading();
     }
   }, [beginProvidersLoading, endProvidersLoading, setProviderStatusFromRows]);
 
   const forceReloadProviders = useCallback(async (reason: string = 'Refreshing provider usage...') => {
+    const generation = ++providerGeneration.current;
     beginProvidersLoading(reason);
     setProvidersStatusText('');
     setProvidersStatusIsError(false);
     try {
       const rows = await forceRefreshProviders();
+      if (generation !== providerGeneration.current) return;
+      providerCount.current = rows.length;
       setProviders(rows);
       setProviderStatusFromRows(rows);
     } finally {
-      endProvidersLoading();
+      if (generation === providerGeneration.current) endProvidersLoading();
     }
   }, [beginProvidersLoading, endProvidersLoading, setProviderStatusFromRows]);
 
@@ -1078,20 +1113,24 @@ function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refres
 
   const refreshPricingData = useCallback(async () => {
     if (loading) return;
+    const generation = ++reloadGeneration.current;
     setLoading(true);
     setLoadingText('Refreshing pricing...');
     try {
       await refreshPricing();
       const d = await loadDataForRange(period, activeAgent === 'all' ? undefined : activeAgent);
+      if (generation !== reloadGeneration.current) return;
       setData(d);
       if (resizeMode === 'auto') resizeTerminalForData(d, providers.length);
     } finally {
-      setLoading(false);
+      if (generation === reloadGeneration.current) setLoading(false);
     }
   }, [loading, period, activeAgent, providers.length, resizeMode]);
 
   const refreshAllData = useCallback(async () => {
     if (loading || providersLoading) return;
+    const generation = ++reloadGeneration.current;
+    const providerRequest = ++providerGeneration.current;
 
     setLoading(true);
     setLoadingText('Refreshing all data...');
@@ -1105,13 +1144,18 @@ function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refres
         loadDataForRange(period, activeAgent === 'all' ? undefined : activeAgent),
         forceRefreshProviders(),
       ]);
-      setData(d);
-      setProviders(p);
-      setProviderStatusFromRows(p);
-      if (resizeMode === 'auto') resizeTerminalForData(d, p.length);
+      if (providerRequest === providerGeneration.current) {
+        providerCount.current = p.length;
+        setProviders(p);
+        setProviderStatusFromRows(p);
+      }
+      if (generation === reloadGeneration.current) {
+        setData(d);
+        if (resizeMode === 'auto') resizeTerminalForData(d, providerCount.current);
+      }
     } finally {
-      setLoading(false);
-      endProvidersLoading();
+      if (generation === reloadGeneration.current) setLoading(false);
+      if (providerRequest === providerGeneration.current) endProvidersLoading();
     }
   }, [
     loading,
@@ -1133,6 +1177,7 @@ function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refres
     saveConfig(config);
 
     if (next === 'auto') resizeTerminalForData(data, providers.length);
+    else restoreTerminal();
   }, [data, providers.length]);
 
   useInput((input, key) => {
@@ -1249,6 +1294,8 @@ const MIN_DASHBOARD_HEIGHT = 30;
 const TARGET_DASHBOARD_WIDTH = 190;
 let lastAppliedHeight: number | null = null;
 let lastAppliedWidth: number | null = null;
+let originalHeight: number | null = null;
+let originalWidth: number | null = null;
 
 function getMaxDashboardHeight(): number {
   return Math.max(60, Math.floor((process.stdout.rows || 50) * 0.9));
@@ -1261,14 +1308,21 @@ function supportsXTWINOPS(): boolean {
 }
 
 function restoreTerminal(): void {
+  if (!supportsXTWINOPS() || originalHeight === null || originalWidth === null) return;
+  process.stdout.write(`\x1b[8;${originalHeight};${originalWidth}t`);
+  lastAppliedHeight = null;
+  lastAppliedWidth = null;
 }
 
 process.on('exit', restoreTerminal);
 
-process.on('SIGTERM', () => {
+function handleTerminationSignal(): void {
   restoreTerminal();
-  process.exit(0);
-});
+  void closeBrowserWithDeadline().finally(() => process.exit(0));
+}
+
+process.on('SIGINT', handleTerminationSignal);
+process.on('SIGTERM', handleTerminationSignal);
 
 function tablePanelHeight(rows: number, limit: number): number {
   if (rows <= 0) return 4;
@@ -1279,16 +1333,16 @@ function desiredDashboardHeight(data: DashboardData, providerCount: number): num
   // period tabs (1) + agent tabs (1) + status bar (3: border + content + border)
   const chrome = 5;
 
-  // Empty state: one "No usage data" panel (3 lines).
+  // Providers panel: 2 borders + title + names row + up to 3 bar rows (5h, Wk, Mo).
+  const providers = providerCount > 0 ? 8 : 4;
+
+  // Empty state keeps provider status visible above one "No usage data" panel.
   if (data.summary.totalCalls === 0) {
-    return Math.max(MIN_DASHBOARD_HEIGHT, chrome + 3 + 2);
+    return Math.max(MIN_DASHBOARD_HEIGHT, chrome + providers + 3 + 2);
   }
 
   // Overview: 2 borders + title + 2 metric rows.
   const overview = 5;
-  // Providers panel: 2 borders + title + names row + up to 3 bar rows (5h, Wk, Mo).
-  const providers = providerCount > 0 ? 8 : 4;
-
   const topRow = Math.max(
     tablePanelHeight(data.byProject.length, 12),
     tablePanelHeight(data.byModel.length, 12),
@@ -1311,6 +1365,8 @@ function desiredDashboardHeight(data: DashboardData, providerCount: number): num
 function resizeTerminalTo(height: number, width: number): void {
   if (lastAppliedHeight === height && lastAppliedWidth === width) return;
   if (!supportsXTWINOPS()) return;
+  originalHeight ??= process.stdout.rows || 50;
+  originalWidth ??= process.stdout.columns || 120;
   // When shrinking, Windows Terminal sometimes gives one fewer usable row than
   // requested in the alt screen buffer; +1 compensates so all content rows fit.
   const isShrinking = lastAppliedHeight !== null && height < lastAppliedHeight;
@@ -1383,7 +1439,7 @@ export async function runInkDashboard(
     }
   } finally {
     if (!fastQuitRequested) {
-      void closeBrowser();
+      await closeBrowserWithDeadline();
     }
   }
 }

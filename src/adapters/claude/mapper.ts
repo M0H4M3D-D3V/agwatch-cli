@@ -37,7 +37,7 @@ function normalizeToolName(name: string): string {
   return name || 'unknown';
 }
 
-export function mapClaudeEntries(entries: ParsedClaudeEntry[]): UsageEvent[] {
+export function mapClaudeEntries(entries: ParsedClaudeEntry[], agentId = 'claude'): UsageEvent[] {
   const pricing = getCachedPricing();
 
   return entries.map((entry) => {
@@ -47,16 +47,12 @@ export function mapClaudeEntries(entries: ParsedClaudeEntry[]): UsageEvent[] {
     const outputTokens = nonNegativeNumber(entry.outputTokens);
     const cachedTokens = nonNegativeNumber(entry.cachedTokens);
     const writtenTokens = nonNegativeNumber(entry.writtenTokens);
-    let mcpServer: string | undefined;
-    for (const t of entry.tools) {
-      if (t.startsWith('mcp__')) {
-        const parts = t.slice(5).split('__');
-        mcpServer = parts[0] ?? t;
-        break;
-      }
-    }
+    const mcpServers = entry.tools
+      .filter((tool) => tool.startsWith('mcp__'))
+      .map((tool) => tool.slice(5).split('__')[0] ?? tool);
 
     return {
+      agentId,
       ts: entry.timestamp,
       sessionId: entry.sessionId,
       project: entry.project,
@@ -69,9 +65,12 @@ export function mapClaudeEntries(entries: ParsedClaudeEntry[]): UsageEvent[] {
       writtenTokens,
       costUsd: estimateCost(normalizedModel, inputTokens, outputTokens, cachedTokens, writtenTokens, pricing),
       callCount: 1,
-      toolName: toolNames.length > 0 ? toolNames.join(', ') : undefined,
-      shellCommand: entry.bashCommand,
-      mcpServer,
+      toolNames: toolNames.length > 0 ? toolNames : undefined,
+      toolName: toolNames[0],
+      shellCommands: entry.bashCommands.length > 0 ? entry.bashCommands : undefined,
+      shellCommand: entry.bashCommands[0] ?? entry.bashCommand,
+      mcpServers: mcpServers.length > 0 ? mcpServers : undefined,
+      mcpServer: mcpServers[0],
     };
   });
 }

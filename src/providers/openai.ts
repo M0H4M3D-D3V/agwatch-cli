@@ -1,4 +1,4 @@
-import type { ProviderConnector, ProviderUsageData } from './types.js';
+import type { ProviderConnector, ProviderScrapeOptions, ProviderUsageData } from './types.js';
 import { getSupportedProvider } from '../config/providers.js';
 import { hasCookies, deleteCookies, authenticate, createScrapePageForProvider } from './browser.js';
 import { loadProviderSession } from './session.js';
@@ -36,21 +36,24 @@ export class OpenAIConnector implements ProviderConnector {
     return hasCookies(this.id);
   }
 
-  async authenticate(onStatus?: (msg: string) => void): Promise<void> {
+  async authenticate(onStatus?: (msg: string) => void, signal?: AbortSignal): Promise<void> {
     const ok = await authenticate(
       this.id,
       this.def.authUrl,
       this.def.authSuccessPattern,
       this.def.usageUrl,
       onStatus,
+      signal,
     );
     if (!ok) throw new Error('Authentication failed or timed out');
   }
 
-  async scrapeUsage(_options?: { allowVisibleFallback?: boolean }): Promise<ProviderUsageData> {
+  async scrapeUsage(options?: ProviderScrapeOptions): Promise<ProviderUsageData> {
+    const signal = options?.signal;
+    signal?.throwIfAborted();
     const startedAt = Date.now();
-    const mode = _options?.allowVisibleFallback ? 'manual' : 'startup';
-    const apiTimeout = _options?.allowVisibleFallback ? 18_000 : 12_000;
+    const mode = options?.allowVisibleFallback ? 'manual' : 'startup';
+    const apiTimeout = options?.allowVisibleFallback ? 18_000 : 12_000;
     const session = loadProviderSession(this.id);
 
     if (!session) {
@@ -60,22 +63,25 @@ export class OpenAIConnector implements ProviderConnector {
     }
 
     try {
-      const data = await fetchOpenAIUsageApi(session, apiTimeout);
+      const data = await fetchOpenAIUsageApi(session, apiTimeout, signal);
+      signal?.throwIfAborted();
       data.source = 'api';
       data.durationMs = Date.now() - startedAt;
       recordScrapeMetric({ providerId: this.id, mode, source: 'api', durationMs: data.durationMs, success: true, at: Date.now() });
       return data;
     } catch (err) {
+      signal?.throwIfAborted();
       const mapped = toProviderScrapeError(err);
       recordScrapeMetric({ providerId: this.id, mode, source: 'api', durationMs: Date.now() - startedAt, success: false, errorCode: mapped.code, at: Date.now() });
 
       if (shouldFallbackToBrowser(mapped.code, getFallbackMode())) {
         const fbStart = Date.now();
-        const fb = await this.scrapeUsageHeadlessApi();
+        const fb = await this.scrapeUsageHeadlessApi(signal);
+        signal?.throwIfAborted();
         fb.source = 'browser-fallback';
         fb.durationMs = Date.now() - fbStart;
         if (fb.error) {
-          fb.errorCode = 'unknown';
+          fb.errorCode ??= mapped.code;
           recordScrapeMetric({ providerId: this.id, mode, source: 'browser-fallback', durationMs: fb.durationMs, success: false, errorCode: fb.errorCode, at: Date.now() });
         } else {
           recordScrapeMetric({ providerId: this.id, mode, source: 'browser-fallback', durationMs: fb.durationMs, success: true, at: Date.now() });
@@ -87,29 +93,29 @@ export class OpenAIConnector implements ProviderConnector {
     }
   }
 
-  private async scrapeUsageHeadlessApi(): Promise<ProviderUsageData> {
+  private async scrapeUsageHeadlessApi(signal?: AbortSignal): Promise<ProviderUsageData> {
     // We wait for the app's own wham/usage response, but with strict matching
     // and payload validation so we never capture sibling endpoints such as
     // /wham/usage/credit-usage-events.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let page: any | null = null;
     try {
-      page = await createScrapePageForProvider(this.id);
+      page = await createScrapePageForProvider(this.id, signal);
 
       const usageJsonPromise = new Promise<WhamUsageResponse>((resolve, reject) => {
         let done = false;
+        let timeout: ReturnType<typeof setTimeout> | undefined;
 
         const finish = (cb: () => void): void => {
           if (done) return;
           done = true;
-          clearTimeout(timeout);
+          if (timeout) clearTimeout(timeout);
           page.off('response', onResponse);
+          signal?.removeEventListener('abort', onAbort);
           cb();
         };
 
-        const timeout = setTimeout(() => {
-          finish(() => reject(new Error('Timed out waiting for valid wham usage response')));
-        }, 60_000);
+        const onAbort = () => finish(() => reject(signal?.reason));
 
         const onResponse = async (res: { url: () => string; status: () => number; text: () => Promise<string> }) => {
           let pathname = '';
@@ -135,6 +141,7 @@ export class OpenAIConnector implements ProviderConnector {
 
           try {
             const raw = await res.text();
+            if (signal?.aborted) return onAbort();
             const parsed = JSON.parse(raw) as WhamUsageResponse;
             // (2) Accept only valid usage payload shape.
             if (!this.isValidWhamUsageResponse(parsed)) {
@@ -146,20 +153,28 @@ export class OpenAIConnector implements ProviderConnector {
           }
         };
 
+        timeout = setTimeout(() => {
+          finish(() => reject(new Error('Timed out waiting for valid wham usage response')));
+        }, 60_000);
+
         // (3) Keep listener active until valid payload or timeout.
         page.on('response', onResponse);
+        if (signal?.aborted) onAbort();
+        else signal?.addEventListener('abort', onAbort, { once: true });
       });
 
       // Prevent unhandled rejection if caller exits early (e.g. outer timeout).
       void usageJsonPromise.catch(() => {});
 
       // (5) Faster readiness strategy than networkidle2.
-      await page.goto(this.def.usageUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      await page.goto(this.def.usageUrl, { waitUntil: 'domcontentloaded', timeout: 30_000, signal });
 
       const usageJson = await usageJsonPromise;
+      signal?.throwIfAborted();
 
       return this.parseUsageFromApi(usageJson);
     } catch (err) {
+      signal?.throwIfAborted();
       return this.errorRow(toProviderScrapeError(err), 'browser-fallback');
     } finally {
       if (page) { try { await page.close(); } catch { /* ignore */ } }

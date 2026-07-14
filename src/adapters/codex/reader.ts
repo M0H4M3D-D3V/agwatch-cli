@@ -24,6 +24,7 @@ export type ParsedCodexEntry = {
   cachedTokens: number;
   writtenTokens: number;
   tools: string[];
+  bashCommands: string[];
   bashCommand?: string;
 };
 
@@ -38,6 +39,7 @@ export async function parseCodexJsonlFile(
   let project = '';
   let model = '';
   let pendingTools: string[] = [];
+  let pendingShellCommands: string[] = [];
   let pendingShellCommand: string | undefined;
 
   let rl: ReturnType<typeof createInterface>;
@@ -73,11 +75,21 @@ export async function parseCodexJsonlFile(
     const tool = extractTool(payload);
     if (tool.name) {
       pendingTools.push(tool.name);
-      if (tool.shellCommand) pendingShellCommand = tool.shellCommand;
+      if (tool.shellCommand) {
+        pendingShellCommand = tool.shellCommand;
+        pendingShellCommands.push(tool.shellCommand);
+      }
     }
 
     const usage = findUsage(obj, payload);
     if (!usage) continue;
+
+    const tools = pendingTools;
+    const shellCommands = pendingShellCommands;
+    const shellCommand = pendingShellCommand;
+    pendingTools = [];
+    pendingShellCommands = [];
+    pendingShellCommand = undefined;
 
     const ts = obj.timestamp ?? stringValue(payload.timestamp);
     if (!ts) continue;
@@ -100,12 +112,10 @@ export async function parseCodexJsonlFile(
       outputTokens,
       cachedTokens,
       writtenTokens,
-      tools: pendingTools,
-      bashCommand: pendingShellCommand,
+      tools,
+      bashCommands: shellCommands,
+      bashCommand: shellCommand,
     });
-
-    pendingTools = [];
-    pendingShellCommand = undefined;
   }
 
   return results;

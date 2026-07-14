@@ -29,7 +29,11 @@ type ZaiQuotaResponse = {
   success?: boolean;
 };
 
-export async function fetchZAIUsageApi(session: ProviderSession, timeoutMs: number): Promise<ProviderUsageData> {
+export async function fetchZAIUsageApi(
+  session: ProviderSession,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<ProviderUsageData> {
   const chatToken = session.cookiesByName['token'] || session.bearerToken;
   if (!chatToken) {
     throw new ProviderScrapeError('unauthorized', 'Z.AI token cookie missing', false);
@@ -39,6 +43,7 @@ export async function fetchZAIUsageApi(session: ProviderSession, timeoutMs: numb
     url: 'https://api.z.ai/api/auth/z/login',
     method: 'POST',
     timeoutMs,
+    signal,
     headers: {
       'accept': 'application/json, text/plain, */*',
       'content-type': 'application/json',
@@ -49,6 +54,9 @@ export async function fetchZAIUsageApi(session: ProviderSession, timeoutMs: numb
     body: JSON.stringify({ token: chatToken }),
   });
 
+  if (loginRes.status === 401 || loginRes.status === 403) {
+    throw new ProviderScrapeError('unauthorized', `Z.AI login exchange unauthorized (${loginRes.status})`, false);
+  }
   if (!loginRes.ok) {
     throw new ProviderScrapeError('network_error', `Z.AI login exchange failed (${loginRes.status})`, true);
   }
@@ -61,6 +69,7 @@ export async function fetchZAIUsageApi(session: ProviderSession, timeoutMs: numb
   const quotaRes = await httpRequest<ZaiQuotaResponse>({
     url: 'https://api.z.ai/api/monitor/usage/quota/limit',
     timeoutMs,
+    signal,
     headers: {
       'accept': 'application/json, text/plain, */*',
       'authorization': `Bearer ${accessToken}`,

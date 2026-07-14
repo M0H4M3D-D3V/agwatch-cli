@@ -35,6 +35,7 @@ export type ParsedClaudeEntry = {
   cachedTokens: number;
   writtenTokens: number;
   tools: string[];
+  bashCommands: string[];
   bashCommand?: string;
 };
 
@@ -77,12 +78,13 @@ export async function parseJsonlFile(
     const ts = obj.timestamp;
     if (!ts) continue;
     const tsMs = new Date(ts).getTime();
-    if (tsMs < fromMs || tsMs > toMs) continue;
+    if (!Number.isFinite(tsMs) || tsMs < fromMs || tsMs > toMs) continue;
 
     const usage = obj.message.usage ?? {};
     const content = obj.message.content ?? [];
 
     const tools: string[] = [];
+    const bashCommands: string[] = [];
     let bashCommand: string | undefined;
 
     for (const block of content) {
@@ -90,6 +92,7 @@ export async function parseJsonlFile(
         tools.push(block.name);
         if (block.name === 'Bash' && block.input?.command && typeof block.input.command === 'string') {
           bashCommand = extractShellCommand(block.input.command);
+          if (bashCommand) bashCommands.push(bashCommand);
         }
       }
     }
@@ -97,14 +100,15 @@ export async function parseJsonlFile(
     results.push({
       type: 'assistant',
       timestamp: ts,
-      sessionId: obj.sessionId ?? '',
-      project: projectFromCwd,
+      sessionId: obj.sessionId ?? filePath,
+      project: projectFromCwd || 'unknown',
       model,
       inputTokens: nonNegativeNumber(usage.input_tokens),
       outputTokens: nonNegativeNumber(usage.output_tokens),
       cachedTokens: nonNegativeNumber(usage.cache_read_input_tokens),
       writtenTokens: nonNegativeNumber(usage.cache_creation_input_tokens),
       tools,
+      bashCommands,
       bashCommand,
     });
   }

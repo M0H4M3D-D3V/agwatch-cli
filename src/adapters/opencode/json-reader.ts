@@ -25,7 +25,7 @@ export class JsonReader {
     return false;
   }
 
-  getSessions(range: TimeRangeFilter): RawSession[] {
+  getSessions(): RawSession[] {
     if (!this.dataDir) return [];
     const sessionsDir = path.join(this.dataDir, 'sessions');
     if (!fs.existsSync(sessionsDir)) return [];
@@ -38,7 +38,7 @@ export class JsonReader {
         try {
           const raw = JSON.parse(fs.readFileSync(path.join(sessionsDir, file), 'utf-8'));
           const createdAt = raw.created_at ?? raw.createdAt ?? '';
-          if (!createdAt || !isInRange(createdAt, range.from, range.to)) continue;
+          if (!createdAt) continue;
 
           sessions.push({
             id: raw.id ?? file.replace('.json', ''),
@@ -57,7 +57,7 @@ export class JsonReader {
     }
   }
 
-  getMessages(sessionIds: string[]): RawMessage[] {
+  getMessages(sessionIds: string[], range: TimeRangeFilter): RawMessage[] {
     if (!this.dataDir || sessionIds.length === 0) return [];
     const messagesDir = path.join(this.dataDir, 'messages');
     if (!fs.existsSync(messagesDir)) return [];
@@ -70,6 +70,8 @@ export class JsonReader {
         try {
           const raw = JSON.parse(fs.readFileSync(path.join(messagesDir, file), 'utf-8'));
           if (!sessionIds.includes(raw.session_id ?? raw.sessionId)) continue;
+          const createdAt = raw.created_at ?? raw.createdAt ?? '';
+          if (!createdAt || !isInRange(createdAt, range.from, range.to)) continue;
 
           messages.push({
             id: raw.id ?? file.replace('.json', ''),
@@ -82,7 +84,7 @@ export class JsonReader {
             cachedTokens: nonNegativeNumber(raw.cached_tokens ?? raw.cachedTokens),
             writtenTokens: nonNegativeNumber(raw.written_tokens ?? raw.writtenTokens),
             costUsd: nonNegativeNumber(raw.cost_usd ?? raw.costUsd),
-            createdAt: raw.created_at ?? raw.createdAt ?? '',
+            createdAt,
             metadata: raw.metadata,
           });
         } catch {

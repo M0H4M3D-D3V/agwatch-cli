@@ -23,6 +23,6 @@ export class CodexAdapter {
       allEntries.push(...entries);
     }
 
-    return mapCodexEntries(allEntries);
+    return mapCodexEntries(allEntries, this.agentConfig?.id);
   }
 }

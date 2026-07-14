@@ -1,4 +1,5 @@
-import type { ProviderConnector, ProviderUsageData } from './types.js';
+import { setTimeout as delay } from 'node:timers/promises';
+import type { ProviderConnector, ProviderScrapeOptions, ProviderUsageData } from './types.js';
 import { getSupportedProvider } from '../config/providers.js';
 import { hasCookies, deleteCookies, authenticate, createScrapePageForProvider } from './browser.js';
 import { loadProviderSession } from './session.js';
@@ -39,18 +40,21 @@ export class ZAIConnector implements ProviderConnector {
     return hasCookies(this.id);
   }
 
-  async authenticate(onStatus?: (msg: string) => void): Promise<void> {
+  async authenticate(onStatus?: (msg: string) => void, signal?: AbortSignal): Promise<void> {
     const ok = await authenticate(
       this.id,
       this.def.authUrl,
       this.def.authSuccessPattern,
       this.def.usageUrl,
       onStatus,
+      signal,
     );
     if (!ok) throw new Error('Authentication failed or timed out');
   }
 
-  async scrapeUsage(options?: { allowVisibleFallback?: boolean }): Promise<ProviderUsageData> {
+  async scrapeUsage(options?: ProviderScrapeOptions): Promise<ProviderUsageData> {
+    const signal = options?.signal;
+    signal?.throwIfAborted();
     const startedAt = Date.now();
     const mode = options?.allowVisibleFallback ? 'manual' : 'startup';
     const apiTimeout = options?.allowVisibleFallback ? 18_000 : 12_000;
@@ -63,19 +67,22 @@ export class ZAIConnector implements ProviderConnector {
     }
 
     try {
-      const data = await fetchZAIUsageApi(session, apiTimeout);
+      const data = await fetchZAIUsageApi(session, apiTimeout, signal);
+      signal?.throwIfAborted();
       data.source = 'api';
       data.durationMs = Date.now() - startedAt;
       recordScrapeMetric({ providerId: this.id, mode, source: 'api', durationMs: data.durationMs, success: true, at: Date.now() });
       return data;
     } catch (err) {
+      signal?.throwIfAborted();
       const mapped = toProviderScrapeError(err);
       recordScrapeMetric({ providerId: this.id, mode, source: 'api', durationMs: Date.now() - startedAt, success: false, errorCode: mapped.code, at: Date.now() });
 
       if (shouldFallbackToBrowser(mapped.code, getFallbackMode())) {
         const fbStart = Date.now();
         const fastMode = options?.allowVisibleFallback === false;
-        const fb = await this.scrapeUsageBrowserFallback(fastMode);
+        const fb = await this.scrapeUsageBrowserFallback(fastMode, signal);
+        signal?.throwIfAborted();
         fb.source = 'browser-fallback';
         fb.durationMs = Date.now() - fbStart;
         if (fb.error) {
@@ -91,20 +98,22 @@ export class ZAIConnector implements ProviderConnector {
     }
   }
 
-  private async scrapeUsageBrowserFallback(fastMode: boolean): Promise<ProviderUsageData> {
+  private async scrapeUsageBrowserFallback(fastMode: boolean, signal?: AbortSignal): Promise<ProviderUsageData> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let page: any | null = null;
     try {
-      page = await createScrapePageForProvider(this.id);
-      const apiResult = await this.tryApiIntercept(page, fastMode);
+      page = await createScrapePageForProvider(this.id, signal);
+      const apiResult = await this.tryApiIntercept(page, fastMode, signal);
+      signal?.throwIfAborted();
       if (apiResult) return apiResult;
 
       if (fastMode) {
         return this.errorResult(new ProviderScrapeError('endpoint_not_found', 'Z.AI usage API not detected in fast startup mode', true), 'browser-fallback');
       }
 
-      return await this.parseDomUsage(page);
+      return await this.parseDomUsage(page, signal);
     } catch (err) {
+      signal?.throwIfAborted();
       return this.errorResult(toProviderScrapeError(err), 'browser-fallback');
     } finally {
       if (page) { try { await page.close(); } catch { /* ignore */ } }
@@ -116,7 +125,7 @@ export class ZAIConnector implements ProviderConnector {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private async tryApiIntercept(page: any, fastMode: boolean): Promise<ProviderUsageData | null> {
+  private async tryApiIntercept(page: any, fastMode: boolean, signal?: AbortSignal): Promise<ProviderUsageData | null> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const candidates: Array<{ body: string; url: string }> = [];
 
@@ -127,6 +136,7 @@ export class ZAIConnector implements ProviderConnector {
         if (!/coding-plan|usage|quota/i.test(pathname)) return;
         if (res.status() < 200 || res.status() >= 300) return;
         const body = await res.text();
+        if (signal?.aborted) return;
         candidates.push({ body, url });
       } catch { /* ignore */ }
     };
@@ -134,8 +144,8 @@ export class ZAIConnector implements ProviderConnector {
     page.on('response', onResponse);
 
     try {
-      await page.goto(this.def.usageUrl, { waitUntil: 'domcontentloaded', timeout: fastMode ? 12_000 : 20_000 });
-      await new Promise(r => setTimeout(r, fastMode ? 1_800 : 4_000));
+      await page.goto(this.def.usageUrl, { waitUntil: 'domcontentloaded', timeout: fastMode ? 12_000 : 20_000, signal });
+      await delay(fastMode ? 1_800 : 4_000, undefined, { signal });
     } finally {
       page.off('response', onResponse);
     }
@@ -196,10 +206,10 @@ export class ZAIConnector implements ProviderConnector {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private async parseDomUsage(page: any): Promise<ProviderUsageData> {
+  private async parseDomUsage(page: any, signal?: AbortSignal): Promise<ProviderUsageData> {
     try {
-      await page.waitForSelector('body', { timeout: 4_000 });
-      await new Promise(r => setTimeout(r, 1_200));
+      await page.waitForSelector('body', { timeout: 4_000, signal });
+      await delay(1_200, undefined, { signal });
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const extracted = await page.evaluate(() => {
@@ -249,6 +259,7 @@ export class ZAIConnector implements ProviderConnector {
           textLen: txt.length,
         };
       });
+      signal?.throwIfAborted();
 
       if (!extracted.hasUsageContent) {
         return this.errorResult(new ProviderScrapeError('unauthorized', 'Usage page content not found — may need re-authentication', false), 'browser-fallback');
@@ -299,6 +310,7 @@ export class ZAIConnector implements ProviderConnector {
         error: parseFailed ? 'Could not extract usage from page DOM' : undefined,
       };
     } catch (err) {
+      signal?.throwIfAborted();
       return this.errorResult(toProviderScrapeError(err), 'browser-fallback');
     }
   }

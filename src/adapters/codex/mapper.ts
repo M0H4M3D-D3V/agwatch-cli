@@ -3,7 +3,7 @@ import type { ParsedCodexEntry } from './reader.js';
 import { getCachedPricing, type ModelPricing } from '../../services/pricing-fetcher.js';
 import { nonNegativeNumber } from '../../utils/numbers.js';
 
-export function mapCodexEntries(entries: ParsedCodexEntry[]): UsageEvent[] {
+export function mapCodexEntries(entries: ParsedCodexEntry[], agentId = 'codex'): UsageEvent[] {
   const pricing = getCachedPricing();
 
   return entries.map((entry) => {
@@ -12,16 +12,12 @@ export function mapCodexEntries(entries: ParsedCodexEntry[]): UsageEvent[] {
     const outputTokens = nonNegativeNumber(entry.outputTokens);
     const cachedTokens = nonNegativeNumber(entry.cachedTokens);
     const writtenTokens = nonNegativeNumber(entry.writtenTokens);
-    let mcpServer: string | undefined;
-
-    for (const tool of entry.tools) {
-      if (tool.startsWith('mcp__')) {
-        mcpServer = tool.slice(5).split('__')[0] ?? tool;
-        break;
-      }
-    }
+    const mcpServers = entry.tools
+      .filter((tool) => tool.startsWith('mcp__'))
+      .map((tool) => tool.slice(5).split('__')[0] ?? tool);
 
     return {
+      agentId,
       ts: entry.timestamp,
       sessionId: entry.sessionId,
       project: entry.project,
@@ -34,9 +30,12 @@ export function mapCodexEntries(entries: ParsedCodexEntry[]): UsageEvent[] {
       writtenTokens,
       costUsd: estimateCost(normalizedModel, inputTokens, outputTokens, cachedTokens, writtenTokens, pricing),
       callCount: 1,
-      toolName: entry.tools.length > 0 ? entry.tools.join(', ') : undefined,
-      shellCommand: entry.bashCommand,
-      mcpServer,
+      toolNames: entry.tools.length > 0 ? entry.tools : undefined,
+      toolName: entry.tools[0],
+      shellCommands: entry.bashCommands.length > 0 ? entry.bashCommands : undefined,
+      shellCommand: entry.bashCommands[0] ?? entry.bashCommand,
+      mcpServers: mcpServers.length > 0 ? mcpServers : undefined,
+      mcpServer: mcpServers[0],
     };
   });
 }

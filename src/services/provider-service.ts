@@ -23,15 +23,24 @@ function manualTimeoutMs(): number {
   return getProviderRuntimeOptions().manualTimeoutMs;
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+export async function withTimeout<T>(
+  run: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  const controller = new AbortController();
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
-  const settledPromise = promise.then(
+  const settledPromise = run(controller.signal).then(
     (value) => ({ ok: true as const, value }),
     (error) => ({ ok: false as const, error }),
   );
 
   const timeoutPromise = new Promise<{ ok: false; error: Error }>((resolve) => {
-    timeoutHandle = setTimeout(() => resolve({ ok: false, error: new Error(message) }), timeoutMs);
+    timeoutHandle = setTimeout(() => {
+      const error = new Error(message);
+      controller.abort(error);
+      resolve({ ok: false, error });
+    }, timeoutMs);
   });
 
   try {
@@ -77,7 +86,7 @@ export async function scrapeAllProvidersWithOptions(options: { allowVisibleFallb
       const timeoutMs = options.allowVisibleFallback ? manualTimeoutMs() : startupTimeoutMs();
       debugLog(`${conn.label} start (mode=${options.allowVisibleFallback ? 'manual' : 'startup'}, timeout=${timeoutMs}ms)`);
       const data = await withTimeout(
-        conn.scrapeUsage({ allowVisibleFallback: options.allowVisibleFallback }),
+        (signal) => conn.scrapeUsage({ allowVisibleFallback: options.allowVisibleFallback, signal }),
         timeoutMs,
         `${conn.label} provider scrape timed out after ${timeoutMs / 1000}s`,
       );

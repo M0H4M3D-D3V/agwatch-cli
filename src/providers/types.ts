@@ -23,12 +23,17 @@ export type ProviderUsageData = {
   durationMs?: number;
 };
 
+export type ProviderScrapeOptions = {
+  allowVisibleFallback?: boolean;
+  signal?: AbortSignal;
+};
+
 export interface ProviderConnector {
   readonly id: string;
   readonly label: string;
   readonly color: string;
   isConfigured(): boolean;
-  authenticate(onStatus?: (msg: string) => void): Promise<void>;
-  scrapeUsage(options?: { allowVisibleFallback?: boolean }): Promise<ProviderUsageData>;
+  authenticate(onStatus?: (msg: string) => void, signal?: AbortSignal): Promise<void>;
+  scrapeUsage(options?: ProviderScrapeOptions): Promise<ProviderUsageData>;
   removeConfig(): void;
 }

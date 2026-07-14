@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import type { AgentConfig } from '../../config/agents.js';
+import { resolveAgentPaths } from '../../config/agents.js';
 
 const CLAUDE_DIR = path.join(os.homedir(), '.claude', 'projects');
 
@@ -21,24 +23,48 @@ export function findClaudeProjectDirs(): string[] {
   }
 }
 
-export function resolveClaudePaths(): string[] {
-  const dirs = findClaudeProjectDirs();
-  const jsonlFiles: string[] = [];
-  for (const dir of dirs) {
+function collectDirectJsonlFiles(dir: string, files: Set<string>): void {
+  try {
+    for (const entry of fs.readdirSync(dir)) {
+      const full = path.join(dir, entry);
+      if (entry.endsWith('.jsonl') && fs.statSync(full).isFile()) files.add(path.resolve(full));
+    }
+  } catch (err) {
+    if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'EACCES') {
+      process.stderr.write(`Warning: Permission denied reading ${dir}: ${err.message}\n`);
+    }
+  }
+}
+
+export function resolveClaudePaths(agentConfig?: AgentConfig): string[] {
+  if (!agentConfig) {
+    const files = new Set<string>();
+    for (const dir of findClaudeProjectDirs()) collectDirectJsonlFiles(dir, files);
+    return [...files];
+  }
+
+  const files = new Set<string>();
+  for (const root of resolveAgentPaths(agentConfig)) {
     try {
-      const entries = fs.readdirSync(dir);
-      for (const entry of entries) {
-        if (entry.endsWith('.jsonl')) {
-          jsonlFiles.push(path.join(dir, entry));
-        }
+      const stat = fs.statSync(root);
+      if (stat.isFile()) {
+        if (root.endsWith('.jsonl')) files.add(path.resolve(root));
+        continue;
+      }
+      if (!stat.isDirectory()) continue;
+
+      collectDirectJsonlFiles(root, files);
+      for (const entry of fs.readdirSync(root)) {
+        const child = path.join(root, entry);
+        if (fs.statSync(child).isDirectory()) collectDirectJsonlFiles(child, files);
       }
     } catch (err) {
       if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'EACCES') {
-        process.stderr.write(`Warning: Permission denied reading ${dir}: ${err.message}\n`);
+        process.stderr.write(`Warning: Permission denied reading ${root}: ${err.message}\n`);
       }
     }
   }
-  return jsonlFiles;
+  return [...files];
 }
 
 export function projectDirToName(dirName: string): string {

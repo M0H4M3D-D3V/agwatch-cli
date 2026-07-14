@@ -54,10 +54,15 @@ function isValidUsagePayload(raw: RawUsageResponse | undefined): boolean {
   return false;
 }
 
-export async function fetchAnthropicUsageApi(session: ProviderSession, timeoutMs: number): Promise<ProviderUsageData> {
+export async function fetchAnthropicUsageApi(
+  session: ProviderSession,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<ProviderUsageData> {
   const orgsRes = await httpRequest<AnthropicOrg[]>({
     url: 'https://claude.ai/api/organizations',
     timeoutMs,
+    signal,
     headers: {
       'accept': 'application/json, text/plain, */*',
       'cookie': session.cookieHeader,
@@ -83,6 +88,7 @@ export async function fetchAnthropicUsageApi(session: ProviderSession, timeoutMs
   const usageRes = await httpRequest<RawUsageResponse>({
     url: `https://claude.ai/api/organizations/${orgId}/usage`,
     timeoutMs,
+    signal,
     headers: {
       'accept': 'application/json, text/plain, */*',
       'cookie': session.cookieHeader,

@@ -75,7 +75,7 @@ Supported providers currently include:
 
 ### Requirements
 
-- Node.js `18+`
+- Node.js `22+`
 - Access to local agent data files
 
 ### Global Install
@@ -213,6 +213,7 @@ On first run, `agwatch` creates this file automatically.
       "id": "opencode",
       "label": "OpenCode",
       "enabled": true,
+      "source": "opencode",
       "type": "sqlite",
       "paths": [
         "~/.local/share/opencode/opencode.db",
@@ -224,6 +225,7 @@ On first run, `agwatch` creates this file automatically.
       "id": "claude",
       "label": "Claude Code",
       "enabled": true,
+      "source": "claude",
       "type": "jsonl",
       "paths": [
         "~/.claude/projects"
@@ -233,6 +235,7 @@ On first run, `agwatch` creates this file automatically.
       "id": "codex",
       "label": "Codex",
       "enabled": true,
+      "source": "codex",
       "type": "jsonl",
       "paths": [
         "~/.codex/sessions"
@@ -255,6 +258,7 @@ On first run, `agwatch` creates this file automatically.
 | `id` | `string` | Stable internal identifier |
 | `label` | `string` | Display name used in tabs and UI |
 | `enabled` | `boolean` | Whether the agent is included in aggregation |
+| `source` | `opencode` \| `claude` \| `codex` | Adapter implementation; required for custom JSONL agent IDs and inferred as `opencode` for SQLite/JSON |
 | `type` | `sqlite` \| `json` \| `jsonl` | Local storage format |
 | `paths` | `string[]` | Candidate paths to search for agent data |
 
@@ -278,6 +282,8 @@ Provider configuration is handled from inside the dashboard.
 
 If browser automation dependencies are missing, `agwatch` prompts to install them during setup.
 
+Provider usage is fetched live on dashboard startup and provider refresh. Usage results are not persisted in a provider cache; authentication cookies and the separate model-pricing cache are persisted as described below.
+
 ## Provider Session Security
 
 When you authenticate a provider, `agwatch` captures the browser session cookies needed to fetch your usage data and stores them locally so you are not prompted to log in on every run.
@@ -298,7 +304,7 @@ The encryption key is derived per-provider using **HKDF-SHA256** keyed from a st
 | macOS | `IOPlatformSerialNumber` via `ioreg` |
 | Linux | `/etc/machine-id` or `/var/lib/dbus/machine-id` |
 
-This means a cookie file copied off your machine cannot be decrypted without the source machine's identifier.
+If the platform identifier cannot be read, key derivation falls back to `username@hostname`, and finally to a fixed emergency fallback in unusually restricted environments. Cookie encryption is local protection, not a substitute for OS account and filesystem security.
 
 ### File permissions
 
@@ -317,20 +323,7 @@ Cookie files are written with owner-only access:
 
 ### Expiry
 
-Cookies with past expiry timestamps are filtered out automatically on every load. If all stored cookies for a provider have expired, the file is deleted and you are prompted to re-authenticate.
-
-### Linux note
-
-On Linux, `agwatch` will display a security notice if `libsecret` is not installed. `libsecret` is required for OS-keychain-backed key storage via `keytar`. Without it, the machine-ID derivation described above is used as a fallback.
-
-Install `libsecret` for your distribution:
-
-| Distribution | Command |
-|---|---|
-| Debian / Ubuntu | `sudo apt-get install libsecret-1-dev` |
-| Red Hat / Fedora / CentOS | `sudo yum install libsecret-devel` |
-| Arch Linux | `sudo pacman -S libsecret` |
-| Alpine Linux | `sudo apk add libsecret-dev` |
+Cookies with past expiry timestamps are filtered out automatically on every load. If all stored cookies for a provider have expired, the file is deleted. Reconfigure that provider from the dashboard provider menu to authenticate again.
 
 ## Pricing
 
@@ -383,8 +376,8 @@ The text summary includes:
 Reads session, message, and tool-call data from local OpenCode storage.
 
 - SQLite is preferred when available
-- Fallback SQLite reading is supported
-- JSON-based fallback reading is supported
+- SQLite is read through `sql.js`
+- Explicit legacy JSON configurations and standard JSON fallback discovery are supported
 
 ### Claude Code
 
@@ -419,7 +412,6 @@ src/
 - Ink
 - React
 - Commander
-- better-sqlite3
 - sql.js
 - dayjs
 - zod
@@ -456,6 +448,14 @@ You can also run:
 npm run lint
 ```
 
+### Test
+
+```bash
+npm test
+```
+
+Tests use Node.js's built-in test runner and rebuild from a clean `dist/` directory first.
+
 ### Run Locally
 
 ```bash
@@ -466,10 +466,10 @@ node dist/cli/index.js summary --range 7d
 
 ## Notes
 
-- No test runner is configured yet.
+- `npm test` runs the regression suite with Node.js's built-in test runner.
 - The package exposes the `agwatch` binary from `dist/cli/index.js`.
-- Required Node.js version is `18+`.
+- Required Node.js version is `22+`.
 
 ## License
 
-ISC
+MIT

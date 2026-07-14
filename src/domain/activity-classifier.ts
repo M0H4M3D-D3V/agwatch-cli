@@ -15,16 +15,17 @@ const ACTIVITY_KEYWORDS: [string, string[]][] = [
 ];
 
 export function classifyActivity(event: UsageEvent): string {
-  const toolName = event.toolName?.toLowerCase() ?? '';
+  const toolNames = (event.toolNames?.length ? event.toolNames : event.toolName ? [event.toolName] : [])
+    .map((name) => name.toLowerCase());
   const shellCmd = event.shellCommand?.toLowerCase() ?? '';
 
   if (shellCmd === 'git') return 'Git Ops';
   if (shellCmd === 'docker' || shellCmd === 'docker-compose') return 'Build/Deploy';
   if (shellCmd === 'npm' || shellCmd === 'yarn' || shellCmd === 'pnpm') return 'Build/Deploy';
   if (shellCmd === 'pytest' || shellCmd === 'vitest' || shellCmd === 'jest') return 'Testing';
-  if (toolName === 'grep' || toolName === 'search') return 'Exploration';
+  if (toolNames.some((name) => name === 'grep' || name === 'search')) return 'Exploration';
 
-  const text = `${toolName} ${shellCmd}`.toLowerCase();
+  const text = `${toolNames.join(' ')} ${shellCmd}`.toLowerCase();
   for (const [activity, keywords] of ACTIVITY_KEYWORDS) {
     for (const keyword of keywords) {
       if (text.includes(keyword)) return activity;

@@ -1,10 +1,32 @@
 import dayjs from 'dayjs';
 import type { TimeRange, TimeRangeFilter } from '../domain/types.js';
+import { AppError } from '../utils/errors.js';
+
+function parseDate(value: string, option: string): dayjs.Dayjs {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new AppError(`${option} must use YYYY-MM-DD format`, 'INVALID_DATE_RANGE');
+  }
+
+  const parsed = dayjs(value);
+  if (!parsed.isValid() || parsed.format('YYYY-MM-DD') !== value) {
+    throw new AppError(`${option} is not a valid calendar date`, 'INVALID_DATE_RANGE');
+  }
+  return parsed;
+}
 
 export function resolveTimeRange(range?: TimeRange, from?: string, to?: string): TimeRangeFilter {
+  if ((from && !to) || (!from && to)) {
+    throw new AppError('--from and --to must be provided together', 'INVALID_DATE_RANGE');
+  }
+
   if (from && to) {
-    const fromDate = dayjs(from).startOf('day').toDate();
-    const toDate = dayjs(to).endOf('day').toDate();
+    const parsedFrom = parseDate(from, '--from');
+    const parsedTo = parseDate(to, '--to');
+    if (parsedFrom.isAfter(parsedTo, 'day')) {
+      throw new AppError('--from must be on or before --to', 'INVALID_DATE_RANGE');
+    }
+    const fromDate = parsedFrom.startOf('day').toDate();
+    const toDate = parsedTo.endOf('day').toDate();
     return { from: fromDate, to: toDate, label: `${from} to ${to}` };
   }
 
@@ -33,9 +55,7 @@ export function resolveTimeRange(range?: TimeRange, from?: string, to?: string):
       return { from, to, label: 'This Month' };
     }
     default: {
-      const from = now.subtract(6, 'day').startOf('day').toDate();
-      const to = now.endOf('day').toDate();
-      return { from, to, label: '7 Days' };
+      throw new AppError(`Unsupported time range: ${String(resolved)}`, 'INVALID_TIME_RANGE');
     }
   }
 }

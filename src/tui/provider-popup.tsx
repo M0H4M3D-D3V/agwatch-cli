@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { SUPPORTED_PROVIDERS } from '../config/providers.js';
 import { loadConfig, saveConfig } from '../config/agents.js';
@@ -27,6 +27,7 @@ export function ProviderPopup({ onClose, onProviderChanged, onQuit, width }: {
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [pendingInstall, setPendingInstall] = useState<string | null>(null);
   const [spinnerIndex, setSpinnerIndex] = useState(0);
+  const operationAbort = useRef<AbortController | null>(null);
 
   const spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -76,6 +77,7 @@ export function ProviderPopup({ onClose, onProviderChanged, onQuit, width }: {
 
   useInput((input, key) => {
     if (input === 'q') {
+      operationAbort.current?.abort(new Error('Provider operation cancelled'));
       onQuit?.();
       return;
     }
@@ -95,14 +97,18 @@ export function ProviderPopup({ onClose, onProviderChanged, onQuit, width }: {
         if (items.length === 0) return;
         const item = items[cursor];
         if (item.type === 'configured') {
-          setPendingDelete(item.id);
-          setState('confirm_delete');
+          const connector = getConnector(item.id);
+          if (connector && !connector.isConfigured()) handleConfigure(item.id);
+          else {
+            setPendingDelete(item.id);
+            setState('confirm_delete');
+          }
         } else {
           handleConfigure(item.id);
         }
       }
     } else if (state === 'confirm_delete') {
-      if (input === 'y' || input === 'Y') {
+      if (input === 'y' || input === 'Y' || input === '\r' || key.return) {
         handleDelete(pendingDelete!);
         setState('menu');
         setPendingDelete(null);
@@ -119,16 +125,12 @@ export function ProviderPopup({ onClose, onProviderChanged, onQuit, width }: {
         setState('menu');
       }
     } else if (state === 'installing') {
-      if (key.escape) {
-        setState('menu');
-      }
+      if (key.escape) operationAbort.current?.abort(new Error('Installation cancelled'));
       if (input && installLog.some((l) => l.toLowerCase().includes('failed'))) {
         setState('menu');
       }
     } else if (state === 'authenticating') {
-      if (key.escape) {
-        setState('menu');
-      }
+      if (key.escape) operationAbort.current?.abort(new Error('Authentication cancelled'));
     }
   });
 
@@ -142,27 +144,38 @@ export function ProviderPopup({ onClose, onProviderChanged, onQuit, width }: {
   }
 
   async function handleInstall() {
+    const controller = new AbortController();
+    operationAbort.current = controller;
     setState('installing');
     setInstallLog(['Installing Puppeteer...']);
 
-    const ok = await installPuppeteer((msg) => {
-      setInstallLog(prev => [...prev.slice(-8), msg]);
-    });
+    try {
+      const ok = await installPuppeteer((msg) => {
+        setInstallLog(prev => [...prev.slice(-8), msg]);
+      }, controller.signal);
 
-    if (ok) {
-      setInstallLog(prev => [...prev, 'Installation complete. Starting auth...']);
-      if (pendingInstall) {
-        await startAuth(pendingInstall);
-        setPendingInstall(null);
+      if (ok) {
+        setInstallLog(prev => [...prev, 'Installation complete. Starting auth...']);
+        if (pendingInstall) {
+          await startAuth(pendingInstall);
+          setPendingInstall(null);
+        } else {
+          setState('menu');
+        }
       } else {
-        setState('menu');
+        setInstallLog(prev => [...prev, 'Installation failed. Press any key to go back.']);
       }
-    } else {
-      setInstallLog(prev => [...prev, 'Installation failed. Press any key to go back.']);
+    } catch (err) {
+      setInstallLog(prev => [...prev, err instanceof Error ? err.message : 'Installation cancelled']);
+      setState('menu');
+    } finally {
+      if (operationAbort.current === controller) operationAbort.current = null;
     }
   }
 
   async function startAuth(providerId: string) {
+    const controller = new AbortController();
+    operationAbort.current = controller;
     setState('authenticating');
     setAuthStatus('Opening browser...');
 
@@ -174,7 +187,8 @@ export function ProviderPopup({ onClose, onProviderChanged, onQuit, width }: {
     }
 
     try {
-      await conn.authenticate((msg) => setAuthStatus(msg));
+      await conn.authenticate((msg) => setAuthStatus(msg), controller.signal);
+      controller.signal.throwIfAborted();
 
       const config = loadConfig();
       const sp = SUPPORTED_PROVIDERS.find(s => s.id === providerId);
@@ -197,7 +211,10 @@ export function ProviderPopup({ onClose, onProviderChanged, onQuit, width }: {
       }, 1500);
     } catch (err) {
       setAuthStatus(`Auth failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
-      setTimeout(() => setState('menu'), 2000);
+      if (controller.signal.aborted) setState('menu');
+      else setTimeout(() => setState('menu'), 2000);
+    } finally {
+      if (operationAbort.current === controller) operationAbort.current = null;
     }
   }
 
@@ -236,7 +253,9 @@ export function ProviderPopup({ onClose, onProviderChanged, onQuit, width }: {
           <Box key={item.id}>
             <Text>{globalCursor === i ? <Text color="#FF8C42">{'▸ '}</Text> : '  '}</Text>
             <Text bold color={item.color}>{item.label}</Text>
-            {globalCursor === i ? <Text color="#666666">  [Enter to remove]</Text> : null}
+            {globalCursor === i ? (
+              <Text color="#666666">  [Enter to {getConnector(item.id)?.isConfigured() ? 'remove' : 're-authenticate'}]</Text>
+            ) : null}
           </Box>
         ))
       )}

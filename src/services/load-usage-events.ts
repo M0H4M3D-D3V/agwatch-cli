@@ -8,29 +8,26 @@ import type { AgentConfig } from '../config/agents.js';
 
 export async function loadUsageEvents(range: TimeRangeFilter, agentId?: string): Promise<UsageEvent[]> {
   const agents = agentId
-    ? [getAgentById(agentId)].filter(Boolean) as AgentConfig[]
+    ? [getAgentById(agentId)].filter((agent): agent is AgentConfig => !!agent?.enabled)
     : getEnabledAgents();
 
-  if (agents.length === 0) {
-    const adapter = new OpenCodeAdapter();
-    const raw = await adapter.loadEvents(range);
-    return normalize(raw);
-  }
+  if (agents.length === 0) return [];
 
   const allEvents: UsageEvent[] = [];
 
   for (const agent of agents) {
+    const source = agent.source ?? agent.id;
     if (agent.type === 'sqlite' || agent.type === 'json') {
       const adapter = new OpenCodeAdapter(agent);
       const raw = await adapter.loadEvents(range);
       const events = normalize(raw);
       allEvents.push(...events);
-    } else if (agent.type === 'jsonl' && agent.id === 'claude') {
-      const adapter = new ClaudeAdapter();
+    } else if (agent.type === 'jsonl' && source === 'claude') {
+      const adapter = new ClaudeAdapter(agent);
       const raw = await adapter.loadEvents(range);
       const events = normalize(raw);
       allEvents.push(...events);
-    } else if (agent.type === 'jsonl' && agent.id === 'codex') {
+    } else if (agent.type === 'jsonl' && source === 'codex') {
       const adapter = new CodexAdapter(agent);
       const raw = await adapter.loadEvents(range);
       const events = normalize(raw);

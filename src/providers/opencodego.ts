@@ -1,4 +1,4 @@
-import type { ProviderConnector, ProviderUsageData } from './types.js';
+import type { ProviderConnector, ProviderScrapeOptions, ProviderUsageData } from './types.js';
 import { getSupportedProvider } from '../config/providers.js';
 import { hasCookies, deleteCookies, authenticate, createScrapePageForProvider } from './browser.js';
 import { loadProviderSession } from './session.js';
@@ -21,18 +21,21 @@ export class OpenCodeGoConnector implements ProviderConnector {
     return hasCookies(this.id);
   }
 
-  async authenticate(onStatus?: (msg: string) => void): Promise<void> {
+  async authenticate(onStatus?: (msg: string) => void, signal?: AbortSignal): Promise<void> {
     const ok = await authenticate(
       this.id,
       this.def.authUrl,
       this.def.authSuccessPattern,
       this.def.usageUrl,
       onStatus,
+      signal,
     );
     if (!ok) throw new Error('Authentication failed or timed out');
   }
 
-  async scrapeUsage(options?: { allowVisibleFallback?: boolean }): Promise<ProviderUsageData> {
+  async scrapeUsage(options?: ProviderScrapeOptions): Promise<ProviderUsageData> {
+    const signal = options?.signal;
+    signal?.throwIfAborted();
     const startedAt = Date.now();
     const mode = options?.allowVisibleFallback ? 'manual' : 'startup';
     const apiTimeout = options?.allowVisibleFallback ? 18_000 : 12_000;
@@ -45,18 +48,21 @@ export class OpenCodeGoConnector implements ProviderConnector {
     }
 
     try {
-      const data = await fetchOpenCodeGoUsageApi(session, apiTimeout);
+      const data = await fetchOpenCodeGoUsageApi(session, apiTimeout, signal);
+      signal?.throwIfAborted();
       data.source = 'api';
       data.durationMs = Date.now() - startedAt;
       recordScrapeMetric({ providerId: this.id, mode, source: 'api', durationMs: data.durationMs, success: true, at: Date.now() });
       return data;
     } catch (err) {
+      signal?.throwIfAborted();
       const mapped = toProviderScrapeError(err);
       recordScrapeMetric({ providerId: this.id, mode, source: 'api', durationMs: Date.now() - startedAt, success: false, errorCode: mapped.code, at: Date.now() });
 
       if (shouldFallbackToBrowser(mapped.code, getFallbackMode())) {
         const fbStart = Date.now();
-        const fb = await this.scrapeUsageBrowserFallback();
+        const fb = await this.scrapeUsageBrowserFallback(signal);
+        signal?.throwIfAborted();
         fb.source = 'browser-fallback';
         fb.durationMs = Date.now() - fbStart;
         if (fb.error) {
@@ -76,13 +82,13 @@ export class OpenCodeGoConnector implements ProviderConnector {
     deleteCookies(this.id);
   }
 
-  private async scrapeUsageBrowserFallback(): Promise<ProviderUsageData> {
+  private async scrapeUsageBrowserFallback(signal?: AbortSignal): Promise<ProviderUsageData> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let page: any | null = null;
     try {
-      page = await createScrapePageForProvider(this.id);
+      page = await createScrapePageForProvider(this.id, signal);
 
-      await page.goto('https://opencode.ai/auth', { waitUntil: 'networkidle2', timeout: 15000 });
+      await page.goto('https://opencode.ai/auth', { waitUntil: 'networkidle2', timeout: 15000, signal });
       const authRedirectUrl = page.url();
       const wsMatch = authRedirectUrl.match(/\/workspace\/([^/?#]+)/);
       if (!wsMatch?.[1]) {
@@ -90,10 +96,11 @@ export class OpenCodeGoConnector implements ProviderConnector {
       }
       const workspaceId = wsMatch[1];
 
-      await page.goto(`https://opencode.ai/workspace/${workspaceId}/go`, { waitUntil: 'networkidle2', timeout: 15000 });
+      await page.goto(`https://opencode.ai/workspace/${workspaceId}/go`, { waitUntil: 'networkidle2', timeout: 15000, signal });
 
-      return await this.parseDomUsage(page);
+      return await this.parseDomUsage(page, signal);
     } catch (err) {
+      signal?.throwIfAborted();
       return this.errorRow(toProviderScrapeError(err), 'browser-fallback');
     } finally {
       if (page) { try { await page.close(); } catch { /* ignore */ } }
@@ -101,7 +108,7 @@ export class OpenCodeGoConnector implements ProviderConnector {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private async parseDomUsage(page: any): Promise<ProviderUsageData> {
+  private async parseDomUsage(page: any, signal?: AbortSignal): Promise<ProviderUsageData> {
     try {
       const extracted = await page.evaluate(() => {
         const txt = (document.body?.innerText ?? '') || '';
@@ -130,6 +137,7 @@ export class OpenCodeGoConnector implements ProviderConnector {
           monthlyReset: monthlyResetMatch ? monthlyResetMatch[1].trim() : '',
         };
       });
+      signal?.throwIfAborted();
 
       if (!extracted.hasGoContent) {
         return this.errorRow(
@@ -162,6 +170,7 @@ export class OpenCodeGoConnector implements ProviderConnector {
         error: parseFailed ? 'Could not extract usage from page DOM' : undefined,
       };
     } catch (err) {
+      signal?.throwIfAborted();
       return this.errorRow(toProviderScrapeError(err), 'browser-fallback');
     }
   }

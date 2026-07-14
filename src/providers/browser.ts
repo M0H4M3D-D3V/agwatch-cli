@@ -2,9 +2,10 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
+import { setTimeout as delay } from 'node:timers/promises';
 import { getProviderCookiesDir, getProviderCookiesPath } from '../utils/paths.js';
-import { encryptCookies, decryptCookies, isAuthCookie, setRestrictiveFilePerms, checkLinuxLibSecret } from './secret-store.js';
-import { isPuppeteerInstalled } from './deps.js';
+import { encryptCookies, decryptCookies, isAuthCookie, setRestrictiveFilePerms } from './secret-store.js';
+import { isPuppeteerInstalled, terminateProcessTree } from './deps.js';
 
 const COOKIES_DIR = getProviderCookiesDir();
 
@@ -13,7 +14,7 @@ function cookiesPath(providerId: string): string {
 }
 
 export function hasCookies(providerId: string): boolean {
-  return fs.existsSync(cookiesPath(providerId));
+  return getCachedCookies(providerId).length > 0;
 }
 
 export function deleteCookies(providerId: string): void {
@@ -26,10 +27,16 @@ export function deleteCookies(providerId: string): void {
 let _scrapeBrowser: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _authBrowser: any = null;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let _scrapeBrowserLaunchPromise: Promise<any> | null = null;
+type ScrapeBrowserLaunch = {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  promise: Promise<any>;
+  controller: AbortController;
+  waiters: Set<symbol>;
+};
+let _scrapeBrowserLaunch: ScrapeBrowserLaunch | null = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _authBrowserLaunchPromise: Promise<any> | null = null;
+let _authBrowserLaunchController: AbortController | null = null;
 let _closingPromise: Promise<void> | null = null;
 let _stealthPluginRegistered = false;
 
@@ -66,15 +73,29 @@ function getCachedCookies(providerId: string): any[] {
  * so bfcache never applies.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function createScrapePageForProvider(providerId: string): Promise<any> {
-  const browser = await getScrapeBrowser();
-  const page = await browser.newPage();
-  await page.setCacheEnabled(false);
+export async function createScrapePageForProvider(providerId: string, signal?: AbortSignal): Promise<any> {
+  signal?.throwIfAborted();
+  const browser = await getScrapeBrowser(signal);
+  signal?.throwIfAborted();
+  let page: any | null = null;
 
-  const cookies = getCachedCookies(providerId);
-  if (cookies.length > 0) await page.setCookie(...cookies);
+  try {
+    page = await browser.newPage();
+    signal?.throwIfAborted();
 
-  return page;
+    const onAbort = () => { void page?.close().catch(() => {}); };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    page.once('close', () => signal?.removeEventListener('abort', onAbort));
+
+    await page.setCacheEnabled(false);
+    const cookies = getCachedCookies(providerId);
+    if (cookies.length > 0) await page.setCookie(...cookies);
+    signal?.throwIfAborted();
+    return page;
+  } catch (err) {
+    if (page) { try { await page.close(); } catch { /* ignore */ } }
+    throw err;
+  }
 }
 
 /** Kick off browser launch in the background so it's ready when scraping starts. */
@@ -188,31 +209,67 @@ function findChromiumInCache(): string | undefined {
 
 // Run puppeteer's own browser-install CLI to force a Chrome download.
 // This is a second attempt in case the npm postinstall script didn't complete the download.
-async function runPuppeteerBrowserInstall(onStatus?: (msg: string) => void): Promise<void> {
+async function runPuppeteerBrowserInstall(onStatus?: (msg: string) => void, signal?: AbortSignal): Promise<void> {
   try {
+    signal?.throwIfAborted();
     const { fileURLToPath } = await import('node:url');
     const here = fileURLToPath(import.meta.url);
     const toolDir = path.resolve(path.dirname(here), '..', '..');
-    const puppeteerBin = path.join(toolDir, 'node_modules', '.bin', 'puppeteer');
+    const puppeteerBin = path.join(toolDir, 'node_modules', '.bin', process.platform === 'win32' ? 'puppeteer.cmd' : 'puppeteer');
     if (!fs.existsSync(puppeteerBin)) return;
 
     onStatus?.('Running puppeteer browser install...');
-    await new Promise<void>((resolve) => {
-      const child = spawn(process.execPath, [puppeteerBin, 'browsers', 'install', 'chrome'], {
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let abortTimer: ReturnType<typeof setTimeout> | undefined;
+      let cancelForceKill: (() => void) | undefined;
+      const child = spawn(puppeteerBin, ['browsers', 'install', 'chrome'], {
         env: { ...process.env },
         stdio: ['ignore', 'pipe', 'pipe'],
+        shell: process.platform === 'win32',
+        detached: process.platform !== 'win32',
       });
+      const cleanup = () => {
+        signal?.removeEventListener('abort', onAbort);
+        if (abortTimer) clearTimeout(abortTimer);
+        cancelForceKill?.();
+      };
+      const onAbort = () => {
+        cancelForceKill = terminateProcessTree(child.pid);
+        abortTimer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          reject(signal?.reason);
+        }, 2_000);
+      };
+      if (signal?.aborted) onAbort();
+      else signal?.addEventListener('abort', onAbort, { once: true });
       child.stdout?.on('data', (d: Buffer) => {
         const line = d.toString().trim();
         if (line) onStatus?.(line);
       });
-      child.on('close', () => resolve());
-      child.on('error', () => resolve());
+      child.on('close', () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (signal?.aborted) reject(signal.reason);
+        else resolve();
+      });
+      child.on('error', (err) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (signal?.aborted) reject(signal.reason);
+        else resolve();
+      });
     });
-  } catch { /* ignore */ }
+  } catch {
+    signal?.throwIfAborted();
+  }
 }
 
-async function launchBrowser(headless: boolean, onStatus?: (msg: string) => void): Promise<any> {
+async function launchBrowser(headless: boolean, onStatus?: (msg: string) => void, signal?: AbortSignal): Promise<any> {
+  signal?.throwIfAborted();
   if (!isPuppeteerInstalled()) {
     throw new Error(
       'Puppeteer not installed — browser fallback requires it. ' +
@@ -221,6 +278,7 @@ async function launchBrowser(headless: boolean, onStatus?: (msg: string) => void
   }
 
   const puppeteerExtra = (await import('puppeteer-extra')).default as any;
+  signal?.throwIfAborted();
   if (!_stealthPluginRegistered) {
     const StealthPlugin = (await import('puppeteer-extra-plugin-stealth')).default as any;
     puppeteerExtra.use(StealthPlugin());
@@ -233,25 +291,27 @@ async function launchBrowser(headless: boolean, onStatus?: (msg: string) => void
   }
 
   let executablePath = await getChromiumExecutablePath();
+  signal?.throwIfAborted();
 
   if (executablePath) {
-    return puppeteerExtra.launch({ headless, args, defaultViewport: null, executablePath });
+    return puppeteerExtra.launch({ headless, args, defaultViewport: null, executablePath, signal });
   }
 
   // Try puppeteer-extra's built-in detection (works on Windows when Chrome is in Program Files,
   // and may work on macOS/Linux too). On failure, fall through to auto-download.
   if (process.platform === 'win32') {
     try {
-      return await puppeteerExtra.launch({ headless, args, defaultViewport: null });
-    } catch { /* Chrome not found — fall through to auto-download */ }
+      return await puppeteerExtra.launch({ headless, args, defaultViewport: null, signal });
+    } catch { signal?.throwIfAborted(); }
   }
 
   // macOS / Linux: try channel-based detection first (instant if Chrome is installed).
   const channels = ['chrome', 'chromium', 'chrome-canary'] as const;
   for (const channel of channels) {
     try {
-      return await puppeteerExtra.launch({ headless, args, defaultViewport: null, channel });
+      return await puppeteerExtra.launch({ headless, args, defaultViewport: null, channel, signal });
     } catch {
+      signal?.throwIfAborted();
       // try next channel
     }
   }
@@ -260,27 +320,28 @@ async function launchBrowser(headless: boolean, onStatus?: (msg: string) => void
   onStatus?.('No browser found. Downloading Chromium (one-time, may take a minute)...');
   try {
     const { installPuppeteer } = await import('./deps.js');
-    const installed = await installPuppeteer();
+    const installed = await installPuppeteer(undefined, signal);
     if (installed) {
       // puppeteer's npm postinstall downloads Chrome, but it can silently fail.
       // Run the puppeteer browser-install CLI as a second explicit download attempt.
-      await runPuppeteerBrowserInstall(onStatus);
+      await runPuppeteerBrowserInstall(onStatus, signal);
     }
-  } catch { /* ignore install errors — still try to find Chrome below */ }
+  } catch { signal?.throwIfAborted(); }
 
   // After the install attempt, try every detection path including the cache search.
   executablePath = (await getChromiumExecutablePath()) ?? findChromiumInCache();
+  signal?.throwIfAborted();
 
   if (executablePath) {
     onStatus?.('Browser ready.');
-    return puppeteerExtra.launch({ headless, args, defaultViewport: null, executablePath });
+    return puppeteerExtra.launch({ headless, args, defaultViewport: null, executablePath, signal });
   }
 
   // Last resort: channel detection again (in case the install added Chrome to a known location).
   for (const channel of channels) {
     try {
-      return await puppeteerExtra.launch({ headless, args, defaultViewport: null, channel });
-    } catch { /* try next */ }
+      return await puppeteerExtra.launch({ headless, args, defaultViewport: null, channel, signal });
+    } catch { signal?.throwIfAborted(); }
   }
 
   throw new Error(
@@ -293,43 +354,95 @@ async function configureVisiblePage(_page: any): Promise<void> {
   // No-op: auth browser opens at the OS default size with no zoom overrides.
 }
 
-async function getScrapeBrowser(): Promise<any> {
-  if (_scrapeBrowser && _scrapeBrowser.connected) return _scrapeBrowser;
-
-  if (_scrapeBrowserLaunchPromise) {
-    _scrapeBrowser = await _scrapeBrowserLaunchPromise;
-    return _scrapeBrowser;
-  }
-
-  _scrapeBrowserLaunchPromise = launchBrowser(true);
-  try {
-    _scrapeBrowser = await _scrapeBrowserLaunchPromise;
-  } finally {
-    _scrapeBrowserLaunchPromise = null;
-  }
-  return _scrapeBrowser;
+function waitForLaunch(promise: Promise<any>, signal?: AbortSignal): Promise<any> {
+  if (!signal) return promise;
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => { cleanup(); resolve(value); },
+      (err) => { cleanup(); reject(err); },
+    );
+  });
 }
 
-async function getAuthBrowser(onStatus?: (msg: string) => void): Promise<any> {
+async function getScrapeBrowser(signal?: AbortSignal): Promise<any> {
+  signal?.throwIfAborted();
+  if (_scrapeBrowser && _scrapeBrowser.connected) return _scrapeBrowser;
+
+  if (!_scrapeBrowserLaunch) {
+    const controller = new AbortController();
+    const launch = { controller, waiters: new Set<symbol>() } as ScrapeBrowserLaunch;
+    launch.promise = launchBrowser(true, undefined, controller.signal)
+      .then(async (browser) => {
+        if (controller.signal.aborted || _scrapeBrowserLaunch !== launch) {
+          await safeClose(browser);
+          controller.signal.throwIfAborted();
+          throw new Error('Browser launch was superseded');
+        }
+        _scrapeBrowser = browser;
+        return browser;
+      })
+      .finally(() => {
+        if (_scrapeBrowserLaunch === launch) _scrapeBrowserLaunch = null;
+      });
+    _scrapeBrowserLaunch = launch;
+  }
+
+  const launch = _scrapeBrowserLaunch;
+  const waiter = Symbol('scrape-browser-waiter');
+  launch.waiters.add(waiter);
+  try {
+    return await waitForLaunch(launch.promise, signal);
+  } finally {
+    launch.waiters.delete(waiter);
+    if (launch.waiters.size === 0 && _scrapeBrowserLaunch === launch && !_scrapeBrowser) {
+      launch.controller.abort(new Error('Browser launch no longer needed'));
+    }
+  }
+}
+
+async function getAuthBrowser(onStatus?: (msg: string) => void, signal?: AbortSignal): Promise<any> {
+  signal?.throwIfAborted();
   if (_authBrowser && _authBrowser.connected) return _authBrowser;
 
   if (_authBrowserLaunchPromise) {
-    _authBrowser = await _authBrowserLaunchPromise;
-    return _authBrowser;
+    return waitForLaunch(_authBrowserLaunchPromise, signal);
   }
 
-  _authBrowserLaunchPromise = launchBrowser(false, onStatus);
+  const controller = new AbortController();
+  const onAbort = () => controller.abort(signal?.reason);
+  signal?.addEventListener('abort', onAbort, { once: true });
+  const launchPromise = launchBrowser(false, onStatus, controller.signal);
+  _authBrowserLaunchPromise = launchPromise;
+  _authBrowserLaunchController = controller;
   try {
-    _authBrowser = await _authBrowserLaunchPromise;
+    const browser = await waitForLaunch(launchPromise, signal);
+    if (_authBrowserLaunchPromise !== launchPromise) {
+      await safeClose(browser);
+      throw new Error('Authentication browser launch was cancelled');
+    }
+    _authBrowser = browser;
     const pages = await _authBrowser.pages();
     await Promise.all(pages.map((page: any) => configureVisiblePage(page)));
   } finally {
-    _authBrowserLaunchPromise = null;
+    signal?.removeEventListener('abort', onAbort);
+    if (_authBrowserLaunchPromise === launchPromise) {
+      _authBrowserLaunchPromise = null;
+      _authBrowserLaunchController = null;
+    }
   }
   return _authBrowser;
 }
 
 async function closeAuthBrowser(): Promise<void> {
+  const launch = _authBrowserLaunchPromise;
+  _authBrowserLaunchPromise = null;
+  _authBrowserLaunchController?.abort(new Error('Authentication browser closed'));
+  _authBrowserLaunchController = null;
+  if (launch) await launch.catch(() => {});
   if (_authBrowser) {
     await safeClose(_authBrowser);
     _authBrowser = null;
@@ -341,7 +454,17 @@ async function safeClose(browser: any): Promise<void> {
     const proc = typeof browser?.process === 'function' ? browser.process() : null;
     const alreadyDead = !!proc && (proc.killed || proc.exitCode !== null);
     if (alreadyDead) return;
-    await browser.close();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const closed = await Promise.race([
+      Promise.resolve(browser.close()).then(() => true, () => true),
+      new Promise<boolean>((resolve) => { timeout = setTimeout(() => resolve(false), 2_000); }),
+    ]);
+    if (timeout) clearTimeout(timeout);
+    if (!closed) {
+      const cancelForceKill = terminateProcessTree(proc?.pid);
+      proc?.once?.('exit', cancelForceKill);
+      try { browser.disconnect(); } catch { /* ignore */ }
+    }
   } catch {
     // ignore noisy shutdown races on fast exit
   }
@@ -360,13 +483,22 @@ export async function closeBrowser(): Promise<void> {
       await safeClose(_authBrowser);
       _authBrowser = null;
     }
+    const authLaunch = _authBrowserLaunchPromise;
     _authBrowserLaunchPromise = null;
+    _authBrowserLaunchController?.abort(new Error('Browser shutdown'));
+    _authBrowserLaunchController = null;
+    if (authLaunch) await authLaunch.catch(() => {});
 
     if (_scrapeBrowser) {
       await safeClose(_scrapeBrowser);
       _scrapeBrowser = null;
     }
-    _scrapeBrowserLaunchPromise = null;
+    const scrapeLaunch = _scrapeBrowserLaunch;
+    _scrapeBrowserLaunch = null;
+    if (scrapeLaunch) {
+      scrapeLaunch.controller.abort(new Error('Browser shutdown'));
+      await scrapeLaunch.promise.catch(() => {});
+    }
   })();
 
   try {
@@ -381,6 +513,9 @@ export function releaseBrowserHandles(): void {
     _cookiesCache.clear();
 
     if (_authBrowser) {
+      const proc = typeof _authBrowser.process === 'function' ? _authBrowser.process() : null;
+      const cancelForceKill = terminateProcessTree(proc?.pid);
+      proc?.once?.('exit', cancelForceKill);
       try {
         _authBrowser.disconnect();
       } catch {
@@ -389,8 +524,13 @@ export function releaseBrowserHandles(): void {
       _authBrowser = null;
     }
     _authBrowserLaunchPromise = null;
+    _authBrowserLaunchController?.abort(new Error('Browser handles released'));
+    _authBrowserLaunchController = null;
 
     if (_scrapeBrowser) {
+      const proc = typeof _scrapeBrowser.process === 'function' ? _scrapeBrowser.process() : null;
+      const cancelForceKill = terminateProcessTree(proc?.pid);
+      proc?.once?.('exit', cancelForceKill);
       try {
         _scrapeBrowser.disconnect();
       } catch {
@@ -398,7 +538,8 @@ export function releaseBrowserHandles(): void {
       }
       _scrapeBrowser = null;
     }
-    _scrapeBrowserLaunchPromise = null;
+    _scrapeBrowserLaunch?.controller.abort(new Error('Browser handles released'));
+    _scrapeBrowserLaunch = null;
   } catch {
     // ignore
   }
@@ -410,46 +551,30 @@ export async function authenticate(
   successPattern: string,
   verifyUrl: string,
   onStatus?: (msg: string) => void,
+  signal?: AbortSignal,
 ): Promise<boolean> {
-  // ── Linux security pre-check ────────────────────────────────────────────────
-  const libSecret = checkLinuxLibSecret();
-  if (libSecret && !libSecret.ok) {
-    onStatus?.('');
-    onStatus?.('  ╔══════════════════════════════════════════════════════════╗');
-    onStatus?.('  ║          SECURITY REQUIREMENT: libsecret missing         ║');
-    onStatus?.('  ╠══════════════════════════════════════════════════════════╣');
-    onStatus?.('  ║  agwatch uses libsecret (via keytar) to store cookie     ║');
-    onStatus?.('  ║  encryption keys securely in your OS keychain.           ║');
-    onStatus?.('  ║  Without it, keys are derived from your machine ID only. ║');
-    onStatus?.('  ║                                                          ║');
-    onStatus?.('  ║  Install libsecret for your distro:                      ║');
-    for (const line of libSecret.installCmd.split('\n')) {
-      const padded = `  ║  ${line}`.padEnd(62) + '║';
-      onStatus?.(padded);
-    }
-    onStatus?.('  ║                                                          ║');
-    onStatus?.('  ║  Auth will continue with reduced key security.           ║');
-    onStatus?.('  ╚══════════════════════════════════════════════════════════╝');
-    onStatus?.('');
-  }
-  // ───────────────────────────────────────────────────────────────────────────
-
+  signal?.throwIfAborted();
   if (!canOpenVisibleBrowser()) {
     onStatus?.('Cannot open auth browser: no display server detected. Set DISPLAY or WAYLAND_DISPLAY.');
     return false;
   }
 
-  const browser = await getAuthBrowser(onStatus);
+  const browser = await getAuthBrowser(onStatus, signal);
   onStatus?.('Browser opened. Please log in...');
+  const onAbort = () => { void closeAuthBrowser(); };
+  signal?.addEventListener('abort', onAbort, { once: true });
 
-  let page = (await browser.pages())[0] || await browser.newPage();
-  await configureVisiblePage(page);
-
+  let page: any = null;
   try {
+    signal?.throwIfAborted();
+    page = (await browser.pages())[0] || await browser.newPage();
+    signal?.throwIfAborted();
+    await configureVisiblePage(page);
+    signal?.throwIfAborted();
     const existingCookies = getCachedCookies(providerId);
     if (existingCookies.length > 0) await page.setCookie(...existingCookies);
 
-    await page.goto(authUrl, { waitUntil: 'networkidle2', timeout: 120_000 });
+    await page.goto(authUrl, { waitUntil: 'networkidle2', timeout: 120_000, signal });
 
     onStatus?.('Waiting for successful login...');
     const timeoutMs = 600_000;
@@ -458,6 +583,7 @@ export async function authenticate(
     let success = false;
 
     while (Date.now() - start < timeoutMs) {
+      signal?.throwIfAborted();
       // Re-acquire active page each tick — handles user closing original tab or OAuth popups taking over.
       try {
         const pages = await browser.pages();
@@ -465,7 +591,7 @@ export async function authenticate(
           try { const u = p.url(); return u && u !== 'about:blank'; } catch { return false; }
         });
         if (activePage) page = activePage;
-      } catch { /* browser temporarily unreachable — treat as transient */ }
+      } catch { signal?.throwIfAborted(); }
 
       // page.url() / page.cookies() / page.evaluate() all throw during cross-origin OAuth redirects
       // (e.g. "Execution context was destroyed") — treat every transient page error as still waiting.
@@ -473,7 +599,7 @@ export async function authenticate(
       try {
         href = page.url().toLowerCase();
       } catch {
-        await new Promise((r) => setTimeout(r, pollMs));
+        await delay(pollMs, undefined, { signal });
         continue;
       }
 
@@ -489,7 +615,7 @@ export async function authenticate(
       try {
         cookies = await page.cookies();
       } catch {
-        await new Promise((r) => setTimeout(r, pollMs));
+        await delay(pollMs, undefined, { signal });
         continue;
       }
       const hasSessionCookie = cookies.some((c: { name: string }) =>
@@ -529,7 +655,7 @@ export async function authenticate(
           return { hasLoginMarkers, hasAppMarkers };
         });
       } catch {
-        await new Promise((r) => setTimeout(r, pollMs));
+        await delay(pollMs, undefined, { signal });
         continue;
       }
 
@@ -546,7 +672,7 @@ export async function authenticate(
           verifyPage = await browser.newPage();
           await configureVisiblePage(verifyPage);
           await verifyPage.setCookie(...cookies);
-          await verifyPage.goto(verifyUrl, { waitUntil: 'networkidle2', timeout: 60_000 });
+          await verifyPage.goto(verifyUrl, { waitUntil: 'networkidle2', timeout: 60_000, signal });
 
           const verifyHref = verifyPage.url().toLowerCase();
           const redirectedToAuth =
@@ -588,6 +714,7 @@ export async function authenticate(
 
           verified = !redirectedToAuth && !verifyMarkers.hasLoginMarkers && verifyMarkers.hasUsageMarkers;
         } catch {
+          signal?.throwIfAborted();
           verified = false;
         } finally {
           if (verifyPage) { try { await verifyPage.close(); } catch { /* ignore */ } }
@@ -599,7 +726,7 @@ export async function authenticate(
         }
       }
 
-      await new Promise((r) => setTimeout(r, pollMs));
+      await delay(pollMs, undefined, { signal });
     }
 
     if (!success) {
@@ -625,6 +752,7 @@ export async function authenticate(
     onStatus?.('Auth successful. Saving session...');
     return true;
   } finally {
+    signal?.removeEventListener('abort', onAbort);
     await closeAuthBrowser();
   }
 }

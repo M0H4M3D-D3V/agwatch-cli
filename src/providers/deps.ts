@@ -53,22 +53,63 @@ function getCandidateNpmPaths(): string[] {
 
 type Attempt = { cmd: string; args: string[]; label: string };
 
+export function terminateProcessTree(pid: number | undefined): () => void {
+  if (!pid) return () => {};
+  if (process.platform === 'win32') {
+    const killer = spawn('taskkill', ['/pid', String(pid), '/t', '/f'], { stdio: 'ignore', windowsHide: true });
+    killer.unref();
+    return () => {};
+  }
+  try {
+    process.kill(-pid, 'SIGTERM');
+    const forceKill = setTimeout(() => {
+      try { process.kill(-pid, 'SIGKILL'); } catch { /* process group exited */ }
+    }, 1_000);
+    forceKill.unref();
+    return () => clearTimeout(forceKill);
+  } catch {
+    try { process.kill(pid, 'SIGTERM'); } catch { /* already exited */ }
+    return () => {};
+  }
+}
+
 async function runInstallAttempt(
   attempt: Attempt,
   cwd: string,
   env: Record<string, string>,
   onProgress?: (msg: string) => void,
+  signal?: AbortSignal,
 ): Promise<boolean> {
+  signal?.throwIfAborted();
   onProgress?.(`Trying: ${attempt.label}`);
   onProgress?.(`Command: ${attempt.cmd} ${attempt.args.join(' ')}`);
 
-  return new Promise<boolean>((resolve) => {
+  return new Promise<boolean>((resolve, reject) => {
+    let settled = false;
+    let abortTimer: ReturnType<typeof setTimeout> | undefined;
+    let cancelForceKill: (() => void) | undefined;
     const child = spawn(attempt.cmd, attempt.args, {
       cwd,
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: attempt.cmd === 'npm',
+      detached: process.platform !== 'win32',
     });
+    const cleanup = () => {
+      signal?.removeEventListener('abort', onAbort);
+      if (abortTimer) clearTimeout(abortTimer);
+      cancelForceKill?.();
+    };
+    const onAbort = () => {
+      cancelForceKill = terminateProcessTree(child.pid);
+      abortTimer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        reject(signal?.reason);
+      }, 2_000);
+    };
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener('abort', onAbort, { once: true });
 
     child.stdout.on('data', (d: Buffer) => {
       const lines = d.toString().split('\n').filter(Boolean);
@@ -85,11 +126,25 @@ async function runInstallAttempt(
     });
 
     child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (signal?.aborted) {
+        reject(signal.reason);
+        return;
+      }
       onProgress?.(`Attempt failed to start: ${err.message}`);
       resolve(false);
     });
 
     child.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (signal?.aborted) {
+        reject(signal.reason);
+        return;
+      }
       if (code === 0) {
         resolve(true);
       } else {
@@ -102,7 +157,9 @@ async function runInstallAttempt(
 
 export async function installPuppeteer(
   onProgress?: (msg: string) => void,
+  signal?: AbortSignal,
 ): Promise<boolean> {
+  signal?.throwIfAborted();
   const toolDir = getToolDir();
   const cwd = fs.existsSync(toolDir) ? toolDir : process.cwd();
   const packages = ['puppeteer', 'puppeteer-extra', 'puppeteer-extra-plugin-stealth'];
@@ -138,7 +195,8 @@ export async function installPuppeteer(
   });
 
   for (const attempt of attempts) {
-    const ok = await runInstallAttempt(attempt, cwd, env, onProgress);
+    const ok = await runInstallAttempt(attempt, cwd, env, onProgress, signal);
+    signal?.throwIfAborted();
     if (ok) {
       onProgress?.('Puppeteer installed successfully.');
       return true;

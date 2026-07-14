@@ -3,12 +3,15 @@ import { resolveClaudePaths } from './paths.js';
 import { parseJsonlFile } from './reader.js';
 import { mapClaudeEntries } from './mapper.js';
 import { initPricing } from '../opencode/mapper.js';
+import type { AgentConfig } from '../../config/agents.js';
 
 export class ClaudeAdapter {
+  constructor(private readonly agentConfig?: AgentConfig) {}
+
   async loadEvents(range: TimeRangeFilter): Promise<UsageEvent[]> {
     await initPricing();
 
-    const files = resolveClaudePaths();
+    const files = resolveClaudePaths(this.agentConfig);
     if (files.length === 0) return [];
 
     const fromMs = range.from.getTime();
@@ -20,6 +23,6 @@ export class ClaudeAdapter {
       allEntries.push(...entries);
     }
 
-    return mapClaudeEntries(allEntries);
+    return mapClaudeEntries(allEntries, this.agentConfig?.id);
   }
 }

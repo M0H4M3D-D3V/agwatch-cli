@@ -1,13 +1,13 @@
 {
   "name": "agwatch-cli",
-  "version": "1.2.0",
+  "version": "2.0.0",
   "description": "Terminal analytics CLI for AI coding agents, usage, costs, tokens, and providers",
   "type": "module",
   "bin": {
     "agwatch": "dist/cli/index.js"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.0.0"
   },
   "files": [
     "dist/",
@@ -17,11 +17,14 @@
     "images/"
   ],
   "scripts": {
-    "build": "tsc",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc",
     "dev": "tsc --watch",
     "start": "node dist/cli/index.js",
     "lint": "tsc --noEmit",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test",
+    "prepack": "npm test"
   },
   "keywords": [
     "ai",
@@ -53,7 +56,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@types/node": "^25.6.0",
+    "@types/node": "^22.0.0",
     "@types/react": "^19.2.14",
     "@types/sql.js": "^1.4.11",
     "typescript": "^6.0.2"

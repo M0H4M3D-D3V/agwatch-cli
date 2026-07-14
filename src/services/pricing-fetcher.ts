@@ -59,11 +59,25 @@ const MODEL_KEY_MAP: Record<string, string[]> = {
 let cachedPricing: Record<string, ModelPricing> | null = null;
 let cachedTimestamp: number | null = null;
 
-function fetchJson(url: string): Promise<LiteLLMPricing> {
+function fetchJson(url: string, redirects = 0): Promise<LiteLLMPricing> {
   return new Promise((resolve, reject) => {
     const req = https.get(url, { timeout: 15000 }, (res) => {
       if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        fetchJson(res.headers.location).then(resolve, reject);
+        res.resume();
+        if (redirects >= 5) {
+          reject(new Error('Too many pricing redirects'));
+          return;
+        }
+        try {
+          fetchJson(new URL(res.headers.location, url).toString(), redirects + 1).then(resolve, reject);
+        } catch (err) {
+          reject(err);
+        }
+        return;
+      }
+      if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+        res.resume();
+        reject(new Error(`Pricing request failed (${res.statusCode ?? 'unknown'})`));
         return;
       }
       const chunks: Buffer[] = [];
@@ -174,8 +188,8 @@ function readCache(): { pricing: Record<string, ModelPricing>; ts: number; schem
 function writeCache(pricing: Record<string, ModelPricing>): void {
   try {
     const dir = path.dirname(CACHE_FILE);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(CACHE_FILE, JSON.stringify({ schemaVersion: CACHE_SCHEMA_VERSION, ts: Date.now(), pricing }, null, 2), 'utf8');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(CACHE_FILE, JSON.stringify({ schemaVersion: CACHE_SCHEMA_VERSION, ts: Date.now(), pricing }, null, 2), { encoding: 'utf8', mode: 0o600 });
   } catch {}
 }
 
@@ -193,6 +207,7 @@ export async function fetchPricing(force = false): Promise<Record<string, ModelP
   try {
     const data = await fetchJson(PRICING_URL);
     const pricing = extractPricing(data);
+    if (Object.keys(pricing).length === 0) throw new Error('Pricing response contained no usable models');
     writeCache(pricing);
     cachedPricing = pricing;
     cachedTimestamp = Date.now();

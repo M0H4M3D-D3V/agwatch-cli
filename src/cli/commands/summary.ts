@@ -34,8 +34,10 @@ export async function runSummary(opts: {
   const mcpServers = aggregateByMcpServer(events);
 
   if (opts.json) {
+    const agentIds = new Set(events.map((event) => event.agentId));
+    const agent = agentIds.size === 1 ? [...agentIds][0]! : 'all';
     const output = renderSummaryJson(
-      'opencode',
+      agent,
       filter.label,
       opts.from,
       opts.to,

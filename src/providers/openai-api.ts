@@ -27,12 +27,14 @@ type SessionResponse = {
 export async function fetchOpenAIUsageApi(
   session: ProviderSession,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<ProviderUsageData> {
-  const accessToken = await fetchAccessToken(session, timeoutMs);
+  const accessToken = await fetchAccessToken(session, timeoutMs, signal);
 
   const res = await httpRequest<WhamUsageResponse>({
     url: 'https://chatgpt.com/backend-api/wham/usage',
     timeoutMs,
+    signal,
     headers: {
       accept: 'application/json, text/plain, */*',
       authorization: `Bearer ${accessToken}`,
@@ -99,10 +101,12 @@ export async function fetchOpenAIUsageApi(
 async function fetchAccessToken(
   session: ProviderSession,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<string> {
   const res = await httpRequest<SessionResponse>({
     url: 'https://chatgpt.com/api/auth/session',
     timeoutMs,
+    signal,
     headers: {
       accept: 'application/json',
       cookie: session.cookieHeader,

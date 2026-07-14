@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 const [major] = process.versions.node.split('.').map(Number);
-if (major < 18) {
-  process.stderr.write(`agwatch requires Node.js 18 or later. Current: ${process.version}\n`);
+if (major < 22) {
+  process.stderr.write(`agwatch requires Node.js 22 or later. Current: ${process.version}\n`);
   process.exit(1);
 }
 

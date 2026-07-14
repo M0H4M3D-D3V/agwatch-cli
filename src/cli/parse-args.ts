@@ -1,4 +1,4 @@
-import { Command } from 'commander';
+import { Command, InvalidArgumentError } from 'commander';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,44 +30,45 @@ function getCliVersion(): string {
   }
 }
 
-export function parseArgs(): CliArgs {
+export function parseArgs(argv: readonly string[] = process.argv): CliArgs {
   let result: CliArgs = { command: 'dashboard' };
 
   const program = new Command();
+  program.configureHelp({ showGlobalOptions: true });
 
   program
     .name('agwatch')
     .description('AI Usage CLI Dashboard')
     .version(getCliVersion())
-    .option('--range <range>', 'Time range: today, 7d, 30d, month', '7d')
+    .option('--range <range>', 'Time range: today, 7d, 30d, month', parseRange, '7d')
     .option('--watch', 'Enable auto-refresh')
     .option('--provider-debug', 'Enable provider debug mode')
-    .option('--provider-startup-timeout-ms <ms>', 'Provider startup timeout in milliseconds')
-    .option('--provider-manual-timeout-ms <ms>', 'Provider manual refresh timeout in milliseconds')
-    .option('--provider-fallback <mode>', 'Provider fallback: never, on_auth_error, on_any_error')
+    .option('--provider-startup-timeout-ms <ms>', 'Provider startup timeout in milliseconds', parsePositiveInt)
+    .option('--provider-manual-timeout-ms <ms>', 'Provider manual refresh timeout in milliseconds', parsePositiveInt)
+    .option('--provider-fallback <mode>', 'Provider fallback: never, on_auth_error, on_any_error', parseFallbackMode)
     .action((opts) => {
       result = {
         command: 'dashboard',
-        range: validateRange(opts.range),
+        range: opts.range,
         watch: opts.watch ?? false,
         providerDebug: opts.providerDebug ?? undefined,
-        providerStartupTimeoutMs: parsePositiveInt(opts.providerStartupTimeoutMs),
-        providerManualTimeoutMs: parsePositiveInt(opts.providerManualTimeoutMs),
-        providerFallback: validateFallbackMode(opts.providerFallback),
+        providerStartupTimeoutMs: opts.providerStartupTimeoutMs,
+        providerManualTimeoutMs: opts.providerManualTimeoutMs,
+        providerFallback: opts.providerFallback,
       };
     });
 
   program
     .command('summary')
     .description('Show usage summary')
-    .option('--range <range>', 'Time range: today, 7d, 30d, month', '7d')
     .option('--from <date>', 'Start date (YYYY-MM-DD)')
     .option('--to <date>', 'End date (YYYY-MM-DD)')
     .option('--json', 'Output as JSON')
     .action((opts) => {
+      const globals = program.opts();
       result = {
         command: 'summary',
-        range: validateRange(opts.range),
+        range: globals.range,
         from: opts.from,
         to: opts.to,
         json: opts.json ?? false,
@@ -77,47 +78,42 @@ export function parseArgs(): CliArgs {
   program
     .command('dashboard')
     .description('Interactive usage dashboard (default)')
-    .option('--range <range>', 'Time range: today, 7d, 30d, month', '7d')
-    .option('--watch', 'Enable auto-refresh')
-    .option('--provider-debug', 'Enable provider debug mode')
-    .option('--provider-startup-timeout-ms <ms>', 'Provider startup timeout in milliseconds')
-    .option('--provider-manual-timeout-ms <ms>', 'Provider manual refresh timeout in milliseconds')
-    .option('--provider-fallback <mode>', 'Provider fallback: never, on_auth_error, on_any_error')
-    .action((opts) => {
+    .action(() => {
+      const opts = program.opts();
       result = {
         command: 'dashboard',
-        range: validateRange(opts.range),
+        range: opts.range,
         watch: opts.watch ?? false,
         providerDebug: opts.providerDebug ?? undefined,
-        providerStartupTimeoutMs: parsePositiveInt(opts.providerStartupTimeoutMs),
-        providerManualTimeoutMs: parsePositiveInt(opts.providerManualTimeoutMs),
-        providerFallback: validateFallbackMode(opts.providerFallback),
+        providerStartupTimeoutMs: opts.providerStartupTimeoutMs,
+        providerManualTimeoutMs: opts.providerManualTimeoutMs,
+        providerFallback: opts.providerFallback,
       };
     });
 
-  program.parse();
+  program.parse([...argv]);
 
   return result;
 }
 
-function validateRange(range: string | undefined): TimeRange | undefined {
+function parseRange(range: string): TimeRange {
   const valid: TimeRange[] = ['today', '7d', '30d', 'month'];
-  if (range && valid.includes(range as TimeRange)) return range as TimeRange;
-  return undefined;
+  if (valid.includes(range as TimeRange)) return range as TimeRange;
+  throw new InvalidArgumentError(`expected one of: ${valid.join(', ')}`);
 }
 
-function parsePositiveInt(raw: string | undefined): number | undefined {
-  if (!raw) return undefined;
+function parsePositiveInt(raw: string): number {
   const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) return undefined;
-  return Math.floor(n);
+  if (!Number.isSafeInteger(n) || n <= 0) {
+    throw new InvalidArgumentError('expected a positive integer');
+  }
+  return n;
 }
 
-function validateFallbackMode(raw: string | undefined): FallbackMode | undefined {
-  if (!raw) return undefined;
+function parseFallbackMode(raw: string): FallbackMode {
   const v = raw.toLowerCase();
   if (v === 'never' || v === 'on_auth_error' || v === 'on_any_error') {
     return v;
   }
-  return undefined;
+  throw new InvalidArgumentError('expected one of: never, on_auth_error, on_any_error');
 }

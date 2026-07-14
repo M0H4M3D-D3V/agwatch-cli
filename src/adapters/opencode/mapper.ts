@@ -13,7 +13,8 @@ export async function initPricing(): Promise<void> {
 export function mapToUsageEvents(
   sessions: RawSession[],
   messages: RawMessage[],
-  parts: RawPart[]
+  parts: RawPart[],
+  agentId = 'opencode',
 ): UsageEvent[] {
   const sessionMap = new Map(sessions.map((s) => [s.id, s]));
   const messageParts = new Map<string, RawPart[]>();
@@ -35,19 +36,20 @@ export function mapToUsageEvents(
     const msgParts = messageParts.get(msg.id) ?? [];
 
     const toolNames: string[] = [];
-    let shellCommand: string | undefined;
-    let mcpServer: string | undefined;
+    const shellCommands: string[] = [];
+    const mcpServers: string[] = [];
 
     for (const part of msgParts) {
       if (part.type === 'tool-call' && part.name) {
         toolNames.push(normalizeToolName(part.name));
 
         if (part.name === 'bash' && part.text) {
-          shellCommand = extractShellCommand(part.text);
+          const command = extractShellCommand(part.text);
+          if (command) shellCommands.push(command);
         }
 
         if (part.name.startsWith('mcp__') || part.name.includes('mcp')) {
-          mcpServer = normalizeMcpServer(part.name);
+          mcpServers.push(normalizeMcpServer(part.name));
         }
       }
     }
@@ -60,6 +62,7 @@ export function mapToUsageEvents(
     const storedCost = nonNegativeNumber(msg.costUsd);
 
     events.push({
+      agentId,
       ts: msg.createdAt || session.createdAt,
       sessionId: msg.sessionId,
       project: normalizeProject(session.project),
@@ -72,9 +75,12 @@ export function mapToUsageEvents(
       writtenTokens,
       costUsd: storedCost > 0 ? storedCost : estimateCost(normalizedModel, inputTokens, outputTokens, cachedTokens, writtenTokens, dynamicPricing),
       callCount: 1,
-      toolName: toolNames.length > 0 ? toolNames.join(', ') : undefined,
-      shellCommand,
-      mcpServer,
+      toolNames: toolNames.length > 0 ? toolNames : undefined,
+      toolName: toolNames[0],
+      shellCommands: shellCommands.length > 0 ? shellCommands : undefined,
+      shellCommand: shellCommands[0],
+      mcpServers: mcpServers.length > 0 ? mcpServers : undefined,
+      mcpServer: mcpServers[0],
     });
   }
 

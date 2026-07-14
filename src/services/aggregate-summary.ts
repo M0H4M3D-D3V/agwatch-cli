@@ -18,7 +18,7 @@ export function aggregateSummary(events: UsageEvent[]): SummaryMetrics {
 
   const totalCost = events.reduce((sum, e) => sum + nonNegativeNumber(e.costUsd), 0);
   const totalCalls = events.reduce((sum, e) => sum + nonNegativeNumber(e.callCount), 0);
-  const sessionIds = unique(events.map((e) => e.sessionId));
+  const sessionIds = unique(events.map((e) => JSON.stringify([e.agentId, e.sessionId])));
   const cacheHitRate = totalCalls > 0
     ? (events.filter((e) => e.cachedTokens > 0).length / totalCalls) * 100
     : 0;

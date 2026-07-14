@@ -20,17 +20,20 @@ type GoSubscriptionData = {
 export async function fetchOpenCodeGoUsageApi(
   session: ProviderSession,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<ProviderUsageData> {
-  const workspaceId = await discoverWorkspaceId(session, timeoutMs);
+  const workspaceId = await discoverWorkspaceId(session, timeoutMs, signal);
 
-  const htmlRes = await fetch(`https://opencode.ai/workspace/${workspaceId}/go`, {
+  const htmlRes = await httpRequest({
+    url: `https://opencode.ai/workspace/${workspaceId}/go`,
     redirect: 'follow',
+    timeoutMs,
+    signal,
     headers: {
       'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       'cookie': session.cookieHeader,
       'user-agent': CHROME_UA,
     },
-    signal: AbortSignal.timeout(timeoutMs),
   });
 
   if (htmlRes.status === 401 || htmlRes.status === 403) {
@@ -55,7 +58,7 @@ export async function fetchOpenCodeGoUsageApi(
     );
   }
 
-  const html = await htmlRes.text();
+  const html = htmlRes.rawText;
   if (!html || html.length < 100) {
     throw new ProviderScrapeError(
       'payload_invalid',
@@ -84,15 +87,18 @@ export async function fetchOpenCodeGoUsageApi(
 async function discoverWorkspaceId(
   session: ProviderSession,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<string> {
-  const res = await fetch('https://opencode.ai/auth', {
+  const res = await httpRequest({
+    url: 'https://opencode.ai/auth',
     redirect: 'manual',
+    timeoutMs,
+    signal,
     headers: {
       'accept': 'text/html',
       'cookie': session.cookieHeader,
       'user-agent': CHROME_UA,
     },
-    signal: AbortSignal.timeout(timeoutMs),
   });
 
   if (res.status === 401 || res.status === 403) {
@@ -104,7 +110,7 @@ async function discoverWorkspaceId(
   }
 
   if (res.status >= 300 && res.status < 400) {
-    const location = res.headers.get('location') || '';
+    const location = res.headers['location'] || '';
     const match = location.match(/\/workspace\/([^/?#]+)/);
     if (match?.[1]) return match[1];
   }
@@ -113,6 +119,7 @@ async function discoverWorkspaceId(
     const fallbackRes = await httpRequest<{ id?: string }[]>({
       url: 'https://opencode.ai/api/workspaces',
       timeoutMs,
+      signal,
       headers: {
         'accept': 'application/json',
         'cookie': session.cookieHeader,
