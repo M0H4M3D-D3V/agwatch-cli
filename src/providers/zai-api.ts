@@ -3,7 +3,7 @@ import type { ProviderSession } from './session.js';
 import { httpRequest } from './http-client.js';
 import { ProviderScrapeError } from './errors.js';
 import { CHROME_UA } from './constants.js';
-import { clampPct, formatDateShort } from './format-utils.js';
+import { extractUsageLimits, legacyFieldsFromLimits } from './usage-limits.js';
 
 type ZaiLoginResponse = {
   code?: number;
@@ -82,41 +82,32 @@ export async function fetchZAIUsageApi(
   if (quotaRes.status === 401 || quotaRes.status === 403) {
     throw new ProviderScrapeError('unauthorized', `Z.AI quota unauthorized (${quotaRes.status})`, false);
   }
+  if (quotaRes.status === 404) {
+    throw new ProviderScrapeError('endpoint_not_found', 'Z.AI quota endpoint not found', false);
+  }
   if (!quotaRes.ok) {
     throw new ProviderScrapeError('network_error', `Z.AI quota request failed (${quotaRes.status})`, true);
   }
 
-  const limits = quotaRes.json?.data?.limits;
-  if (!Array.isArray(limits) || limits.length === 0) {
-    throw new ProviderScrapeError('payload_invalid', 'Z.AI quota payload missing limits', true);
+  return parseZAIUsage(quotaRes.json);
+}
+
+export function parseZAIUsage(payload: unknown): ProviderUsageData {
+  const limits = extractUsageLimits(payload, {
+    aliases: {
+      five_hour: '5 hours',
+      seven_day: '7 days',
+    },
+  });
+  if (limits.length === 0) {
+    throw new ProviderScrapeError('payload_invalid', 'Z.AI quota payload missing usage limits', true);
   }
-
-  const tokenLimits = limits.filter((l) => l.type === 'TOKENS_LIMIT');
-  if (tokenLimits.length === 0) {
-    throw new ProviderScrapeError('payload_invalid', 'Z.AI quota payload missing TOKENS_LIMIT', true);
-  }
-
-  const sessionLimit = tokenLimits.find((l) => l.unit === 3) ?? tokenLimits[0];
-  const weeklyLimit = tokenLimits.find((l) => l.unit === 6) ?? tokenLimits[1] ?? tokenLimits[0];
-
-  const sessionUsedPct = clampPct(sessionLimit.percentage ?? 0);
-  const weeklyUsedPct = clampPct(weeklyLimit.percentage ?? 0);
-
   return {
     providerId: 'zai',
     providerLabel: 'Z.AI',
     color: '#4A90D9',
-    sessionUsedPct,
-    weeklyUsedPct,
-    sessionResetDate: formatReset(sessionLimit.nextResetTime),
-    weeklyResetDate: formatReset(weeklyLimit.nextResetTime),
+    ...legacyFieldsFromLimits(limits),
+    limits,
     scrapedAt: Date.now(),
   };
-}
-
-function formatReset(ms?: number): string {
-  if (!Number.isFinite(ms as number) || (ms as number) <= 0) return '--';
-  const d = new Date(ms as number);
-  if (Number.isNaN(d.getTime())) return '--';
-  return formatDateShort(d);
 }

@@ -22,3 +22,7 @@ export function getProviderCookiesPath(providerId: string): string {
 export function getPricingCacheFile(): string {
   return path.join(getConfigDir(), 'pricing-cache.json');
 }
+
+export function getBrowserRuntimeDir(): string {
+  return path.join(getConfigDir(), 'browser-runtime');
+}

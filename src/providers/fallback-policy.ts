@@ -9,5 +9,8 @@ export function getFallbackMode(): FallbackMode {
 export function shouldFallbackToBrowser(errorCode: ProviderScrapeErrorCode, mode: FallbackMode): boolean {
   if (mode === 'never') return false;
   if (mode === 'on_any_error') return true;
-  return errorCode === 'unauthorized' || errorCode === 'anti_bot_block';
+  return errorCode === 'unauthorized'
+    || errorCode === 'anti_bot_block'
+    || errorCode === 'endpoint_not_found'
+    || errorCode === 'payload_invalid';
 }

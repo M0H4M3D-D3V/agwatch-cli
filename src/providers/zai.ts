@@ -3,11 +3,12 @@ import type { ProviderConnector, ProviderScrapeOptions, ProviderUsageData } from
 import { getSupportedProvider } from '../config/providers.js';
 import { hasCookies, deleteCookies, authenticate, createScrapePageForProvider } from './browser.js';
 import { loadProviderSession } from './session.js';
-import { fetchZAIUsageApi } from './zai-api.js';
+import { fetchZAIUsageApi, parseZAIUsage } from './zai-api.js';
 import { getFallbackMode, shouldFallbackToBrowser } from './fallback-policy.js';
 import { ProviderScrapeError, toProviderScrapeError } from './errors.js';
 import { recordScrapeMetric } from './metrics.js';
-import { clampPct, formatDateShort } from './format-utils.js';
+import { extractUsageLimits, legacyFieldsFromLimits } from './usage-limits.js';
+import { extractUsageLimitsFromPage } from './dom-usage-limits.js';
 
 type ZaiUsageApiShape = {
   five_hour?: {
@@ -81,12 +82,19 @@ export class ZAIConnector implements ProviderConnector {
       if (shouldFallbackToBrowser(mapped.code, getFallbackMode())) {
         const fbStart = Date.now();
         const fastMode = options?.allowVisibleFallback === false;
-        const fb = await this.scrapeUsageBrowserFallback(fastMode, signal);
-        signal?.throwIfAborted();
+        let fb: ProviderUsageData;
+        try {
+          fb = await this.scrapeUsageBrowserFallback(fastMode, signal);
+          signal?.throwIfAborted();
+        } catch (fallbackError) {
+          if (mapped.code === 'unauthorized') deleteCookies(this.id);
+          throw fallbackError;
+        }
         fb.source = 'browser-fallback';
         fb.durationMs = Date.now() - fbStart;
         if (fb.error) {
           fb.errorCode = fb.errorCode ?? 'unknown';
+          if (mapped.code === 'unauthorized' || fb.errorCode === 'unauthorized') deleteCookies(this.id);
           recordScrapeMetric({ providerId: this.id, mode, source: 'browser-fallback', durationMs: fb.durationMs, success: false, errorCode: fb.errorCode, at: Date.now() });
         } else {
           recordScrapeMetric({ providerId: this.id, mode, source: 'browser-fallback', durationMs: fb.durationMs, success: true, at: Date.now() });
@@ -94,6 +102,7 @@ export class ZAIConnector implements ProviderConnector {
         return fb;
       }
 
+      if (mapped.code === 'unauthorized') deleteCookies(this.id);
       return this.errorResult(mapped, 'api', startedAt);
     }
   }
@@ -129,16 +138,21 @@ export class ZAIConnector implements ProviderConnector {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const candidates: Array<{ body: string; url: string }> = [];
 
-    const onResponse = async (res: { url: () => string; status: () => number; text: () => Promise<string> }) => {
-      try {
-        const url = res.url();
-        const pathname = new URL(url).pathname;
-        if (!/coding-plan|usage|quota/i.test(pathname)) return;
-        if (res.status() < 200 || res.status() >= 300) return;
-        const body = await res.text();
-        if (signal?.aborted) return;
-        candidates.push({ body, url });
-      } catch { /* ignore */ }
+    const pending = new Set<Promise<void>>();
+    const onResponse = (res: { url: () => string; status: () => number; text: () => Promise<string> }) => {
+      const task = (async () => {
+        try {
+          const url = res.url();
+          const pathname = new URL(url).pathname;
+          if (!/coding-plan|usage|quota/i.test(pathname)) return;
+          if (res.status() < 200 || res.status() >= 300) return;
+          const body = await res.text();
+          if (signal?.aborted) return;
+          candidates.push({ body, url });
+        } catch { /* ignore */ }
+      })();
+      pending.add(task);
+      void task.finally(() => pending.delete(task));
     };
 
     page.on('response', onResponse);
@@ -148,61 +162,31 @@ export class ZAIConnector implements ProviderConnector {
       await delay(fastMode ? 1_800 : 4_000, undefined, { signal });
     } finally {
       page.off('response', onResponse);
+      await Promise.allSettled([...pending]);
     }
 
+    let bestResult: ProviderUsageData | null = null;
     for (const c of candidates) {
       try {
         const parsed = JSON.parse(c.body) as ZaiUsageApiShape;
         if (this.looksLikeUsageData(parsed)) {
-          return this.mapApiResult(parsed);
+          const result = this.mapApiResult(parsed);
+          if ((result.limits?.length ?? 0) > (bestResult?.limits?.length ?? 0)) bestResult = result;
         }
       } catch { /* try next */ }
     }
 
-    return null;
+    return bestResult;
   }
 
   private looksLikeUsageData(data: ZaiUsageApiShape): boolean {
-    if (!data || typeof data !== 'object') return false;
-    const fh = data.five_hour;
-    const sd = data.seven_day;
-    const hasFh = !!fh && typeof fh === 'object' && (typeof fh.percent === 'number' || (typeof fh.used === 'number' && typeof fh.total === 'number'));
-    const hasSd = !!sd && typeof sd === 'object' && (typeof sd.percent === 'number' || (typeof sd.used === 'number' && typeof sd.total === 'number'));
-    return hasFh || hasSd;
+    return extractUsageLimits(data, {
+      aliases: { five_hour: '5 hours', seven_day: '7 days' },
+    }).length > 0;
   }
 
   private mapApiResult(data: ZaiUsageApiShape): ProviderUsageData {
-    const fh = data.five_hour;
-    const sd = data.seven_day;
-
-    const sessionPct = fh?.percent != null
-      ? this.clampPct(fh.percent)
-      : (fh && typeof fh.used === 'number' && typeof fh.total === 'number' && fh.total > 0)
-        ? this.clampPct((fh.used / fh.total) * 100)
-        : 0;
-
-    const weeklyPct = sd?.percent != null
-      ? this.clampPct(sd.percent)
-      : (sd && typeof sd.used === 'number' && typeof sd.total === 'number' && sd.total > 0)
-        ? this.clampPct((sd.used / sd.total) * 100)
-        : 0;
-
-    const sessionReset = this.formatReset(fh?.reset_at, fh?.reset_after_seconds);
-    const weeklyReset = this.formatReset(sd?.reset_at, sd?.reset_after_seconds);
-
-    const parseFailed = sessionPct === 0 && weeklyPct === 0 && sessionReset === '--' && weeklyReset === '--';
-
-    return {
-      providerId: this.id,
-      providerLabel: this.label,
-      color: this.color,
-      sessionUsedPct: sessionPct,
-      weeklyUsedPct: weeklyPct,
-      sessionResetDate: sessionReset,
-      weeklyResetDate: weeklyReset,
-      scrapedAt: Date.now(),
-      error: parseFailed ? 'Could not parse Z.AI usage data' : undefined,
-    };
+    return parseZAIUsage(data);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -210,136 +194,22 @@ export class ZAIConnector implements ProviderConnector {
     try {
       await page.waitForSelector('body', { timeout: 4_000, signal });
       await delay(1_200, undefined, { signal });
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const extracted = await page.evaluate(() => {
-        const txt = (document.body?.innerText ?? '') || '';
-
-        const pctPattern = /(\d+(?:\.\d+)?)\s*%/g;
-        const pcts: number[] = [];
-        let m: RegExpExecArray | null;
-        while ((m = pctPattern.exec(txt)) !== null) {
-          pcts.push(parseFloat(m[1]));
-        }
-
-        const ratioPattern = /(\d+)\s*\/\s*(\d+)/g;
-        const ratios: Array<{ used: number; total: number }> = [];
-        while ((m = ratioPattern.exec(txt)) !== null) {
-          const used = parseInt(m[1], 10);
-          const total = parseInt(m[2], 10);
-          if (total > 0 && used <= total * 2) {
-            ratios.push({ used, total });
-          }
-        }
-
-        const timePattern = /(\d{1,2}:\d{2}(?::\d{2})?)\s*(?:AM|PM)?/gi;
-        const times: string[] = [];
-        while ((m = timePattern.exec(txt)) !== null) {
-          times.push(m[0]);
-        }
-
-        const datePatterns = [
-          /\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/g,
-          /\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}/g,
-          /\d{4}\.\d{2}\.\d{2}\s+\d{2}:\d{2}/g,
-        ];
-        const dates: string[] = [];
-        for (const p of datePatterns) {
-          while ((m = p.exec(txt)) !== null) {
-            dates.push(m[0]);
-          }
-        }
-
-        return {
-          hasUsageContent: txt.includes('用量') || txt.includes('额度') || txt.includes('5小时') || txt.includes('每周') || txt.includes('5h') || txt.includes('weekly') || txt.includes('usage'),
-          pcts,
-          ratios,
-          times,
-          dates,
-          textLen: txt.length,
-        };
-      });
-      signal?.throwIfAborted();
-
-      if (!extracted.hasUsageContent) {
-        return this.errorResult(new ProviderScrapeError('unauthorized', 'Usage page content not found — may need re-authentication', false), 'browser-fallback');
+      const limits = await extractUsageLimitsFromPage(page, signal);
+      if (limits.length === 0) {
+        return this.errorResult(new ProviderScrapeError('payload_invalid', 'No usage limits were found on the Z.AI usage page', true), 'browser-fallback');
       }
-
-      let sessionPct = 0;
-      let weeklyPct = 0;
-
-      if (extracted.ratios.length >= 2) {
-        sessionPct = this.clampPct((extracted.ratios[0].used / extracted.ratios[0].total) * 100);
-        weeklyPct = this.clampPct((extracted.ratios[1].used / extracted.ratios[1].total) * 100);
-      } else if (extracted.ratios.length === 1) {
-        sessionPct = this.clampPct((extracted.ratios[0].used / extracted.ratios[0].total) * 100);
-      }
-
-      if (sessionPct === 0 && weeklyPct === 0 && extracted.pcts.length >= 2) {
-        sessionPct = this.clampPct(extracted.pcts[0]);
-        weeklyPct = this.clampPct(extracted.pcts[1]);
-      } else if (sessionPct === 0 && extracted.pcts.length >= 1) {
-        sessionPct = this.clampPct(extracted.pcts[0]);
-      }
-
-      let sessionReset = '--';
-      let weeklyReset = '--';
-      if (extracted.dates.length >= 2) {
-        sessionReset = this.formatDateStr(extracted.dates[0]);
-        weeklyReset = this.formatDateStr(extracted.dates[1]);
-      } else if (extracted.dates.length === 1) {
-        sessionReset = this.formatDateStr(extracted.dates[0]);
-      } else if (extracted.times.length >= 2) {
-        sessionReset = extracted.times[0];
-        weeklyReset = extracted.times[1];
-      } else if (extracted.times.length === 1) {
-        sessionReset = extracted.times[0];
-      }
-
-      const parseFailed = sessionPct === 0 && weeklyPct === 0 && sessionReset === '--' && weeklyReset === '--';
-
       return {
         providerId: this.id,
         providerLabel: this.label,
         color: this.color,
-        sessionUsedPct: sessionPct,
-        weeklyUsedPct: weeklyPct,
-        sessionResetDate: sessionReset,
-        weeklyResetDate: weeklyReset,
+        ...legacyFieldsFromLimits(limits),
+        limits,
         scrapedAt: Date.now(),
-        error: parseFailed ? 'Could not extract usage from page DOM' : undefined,
       };
     } catch (err) {
       signal?.throwIfAborted();
       return this.errorResult(toProviderScrapeError(err), 'browser-fallback');
     }
-  }
-
-  private clampPct(value: number): number {
-    return clampPct(value);
-  }
-
-  private formatReset(resetAt?: string | number | null, resetAfterSec?: number | null): string {
-    if (resetAt != null) {
-      const d = typeof resetAt === 'number'
-        ? new Date(resetAt > 1e12 ? resetAt : resetAt * 1000)
-        : new Date(resetAt);
-      if (!Number.isNaN(d.getTime())) return formatDateShort(d);
-    }
-    if (typeof resetAfterSec === 'number' && Number.isFinite(resetAfterSec) && resetAfterSec > 0) {
-      return formatDateShort(new Date(Date.now() + resetAfterSec * 1000));
-    }
-    return '--';
-  }
-
-  private formatDateStr(raw: string): string {
-    const d = new Date(raw);
-    if (!Number.isNaN(d.getTime())) return formatDateShort(d);
-    return raw;
-  }
-
-  private formatDate(d: Date): string {
-    return formatDateShort(d);
   }
 
   private errorResult(err: unknown, source: 'api' | 'browser-fallback', startedAt?: number): ProviderUsageData {
@@ -352,6 +222,7 @@ export class ZAIConnector implements ProviderConnector {
       weeklyUsedPct: 0,
       sessionResetDate: '--',
       weeklyResetDate: '--',
+      limits: [],
       scrapedAt: Date.now(),
       error: mapped.message,
       errorCode: mapped.code,

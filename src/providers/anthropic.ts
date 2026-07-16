@@ -6,6 +6,7 @@ import { fetchAnthropicUsageApi, parseAnthropicUsage } from './anthropic-api.js'
 import { getFallbackMode, shouldFallbackToBrowser } from './fallback-policy.js';
 import { ProviderScrapeError, toProviderScrapeError } from './errors.js';
 import { recordScrapeMetric } from './metrics.js';
+import { extractUsageLimits } from './usage-limits.js';
 
 type RawUsageResponse = Record<string, any>;
 
@@ -62,12 +63,18 @@ export class AnthropicConnector implements ProviderConnector {
 
       if (shouldFallbackToBrowser(mapped.code, getFallbackMode())) {
         const fbStart = Date.now();
-        const fb = await this.scrapeUsageHeadlessApi(signal);
-        signal?.throwIfAborted();
+        let fb: ProviderUsageData;
+        try {
+          fb = await this.scrapeUsageHeadlessApi(signal);
+          signal?.throwIfAborted();
+        } catch (fallbackError) {
+          throw fallbackError;
+        }
         fb.source = 'browser-fallback';
         fb.durationMs = Date.now() - fbStart;
         if (fb.error) {
           fb.errorCode ??= mapped.code;
+          if (fb.errorCode === 'unauthorized') deleteCookies(this.id);
           recordScrapeMetric({ providerId: this.id, mode, source: 'browser-fallback', durationMs: fb.durationMs, success: false, errorCode: fb.errorCode, at: Date.now() });
         } else {
           recordScrapeMetric({ providerId: this.id, mode, source: 'browser-fallback', durationMs: fb.durationMs, success: true, at: Date.now() });
@@ -153,15 +160,6 @@ export class AnthropicConnector implements ProviderConnector {
       }
 
       const result = parseAnthropicUsage(data);
-
-      const hasPrimaryUsage = result.sessionUsedPct !== 0 || result.weeklyUsedPct !== 0;
-      const hasPrimaryReset = result.sessionResetDate !== '--' || result.weeklyResetDate !== '--';
-
-      const parseFailed = !hasPrimaryUsage && !hasPrimaryReset;
-
-      if (parseFailed) {
-        result.error = 'Could not parse Anthropic usage API response';
-      }
       return result;
     } catch (err) {
       signal?.throwIfAborted();
@@ -180,6 +178,7 @@ export class AnthropicConnector implements ProviderConnector {
       weeklyUsedPct: 0,
       sessionResetDate: '--',
       weeklyResetDate: '--',
+      limits: [],
       scrapedAt: Date.now(),
       error: err.message,
       errorCode: err.code,
@@ -189,24 +188,7 @@ export class AnthropicConnector implements ProviderConnector {
   }
 
   private isValidRawUsage(data: RawUsageResponse | undefined): boolean {
-    if (!data || typeof data !== 'object') return false;
-
-    const fiveHour = data['five_hour'];
-    const sevenDay = data['seven_day'];
-
-    const hasFiveHour = !!fiveHour &&
-      typeof fiveHour === 'object' &&
-      typeof fiveHour.utilization === 'number' &&
-      typeof fiveHour.resets_at === 'string';
-
-    const hasSevenDay = !!sevenDay &&
-      typeof sevenDay === 'object' &&
-      typeof sevenDay.utilization === 'number' &&
-      typeof sevenDay.resets_at === 'string';
-
-    if (hasFiveHour || hasSevenDay) return true;
-
-    return false;
+    return extractUsageLimits(data, { aliases: { five_hour: '5 hours', seven_day: '7 days' } }).length > 0;
   }
 
   removeConfig(): void {

@@ -3,6 +3,7 @@ import { loadConfig } from '../config/agents.js';
 import { getConnector } from '../providers/registry.js';
 import { SUPPORTED_PROVIDERS } from '../config/providers.js';
 import { getProviderRuntimeOptions } from '../providers/runtime-options.js';
+import { getProviderLimits } from '../providers/usage-limits.js';
 
 function isDebugEnabled(): boolean {
   return getProviderRuntimeOptions().debug;
@@ -77,6 +78,7 @@ export async function scrapeAllProvidersWithOptions(options: { allowVisibleFallb
         weeklyUsedPct: 0,
         sessionResetDate: '--',
         weeklyResetDate: '--',
+        limits: [],
         scrapedAt: Date.now(),
         error: 'Not configured',
       };
@@ -95,10 +97,10 @@ export async function scrapeAllProvidersWithOptions(options: { allowVisibleFallb
       if (data.error) {
         debugLog(`${conn.label} completed with error in ${ms}ms (source=${data.source ?? 'n/a'}, code=${data.errorCode ?? 'n/a'}): ${data.error}`);
       } else {
-        const extra: string[] = [];
-        if (data.monthlyUsedPct != null) extra.push(`mo=${data.monthlyUsedPct}%`);
-        const extraStr = extra.length ? ` ${extra.join(' ')}` : '';
-        debugLog(`${conn.label} completed in ${ms}ms (source=${data.source ?? 'n/a'}): 5h=${data.sessionUsedPct}% wk=${data.weeklyUsedPct}%${extraStr}`);
+        const limits = getProviderLimits(data)
+          .map((limit) => `${limit.label}=${limit.usedPercent}% reset=${limit.resetDate}`)
+          .join(' | ');
+        debugLog(`${conn.label} completed in ${ms}ms (source=${data.source ?? 'n/a'}): ${limits || 'no limits'}`);
       }
       return data;
     } catch (err) {
@@ -113,6 +115,7 @@ export async function scrapeAllProvidersWithOptions(options: { allowVisibleFallb
         weeklyUsedPct: 0,
         sessionResetDate: '--',
         weeklyResetDate: '--',
+        limits: [],
         scrapedAt: Date.now(),
         error: reason,
       };

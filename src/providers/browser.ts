@@ -1,11 +1,16 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
-import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { getProviderCookiesDir, getProviderCookiesPath } from '../utils/paths.js';
 import { encryptCookies, decryptCookies, isAuthCookie, setRestrictiveFilePerms } from './secret-store.js';
-import { isPuppeteerInstalled, terminateProcessTree } from './deps.js';
+import {
+  getPuppeteerBrowserPath,
+  installPuppeteer,
+  isPuppeteerUsable,
+  loadPuppeteerModules,
+  terminateProcessTree,
+} from './deps.js';
 
 const COOKIES_DIR = getProviderCookiesDir();
 
@@ -14,7 +19,9 @@ function cookiesPath(providerId: string): string {
 }
 
 export function hasCookies(providerId: string): boolean {
-  return getCachedCookies(providerId).length > 0;
+  return getCachedCookies(providerId).some((cookie) =>
+    /session|token|auth|sid|next-auth/i.test(String(cookie?.name ?? '')),
+  );
 }
 
 export function deleteCookies(providerId: string): void {
@@ -44,17 +51,41 @@ let _stealthPluginRegistered = false;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const _cookiesCache = new Map<string, any[]>();
 
+function filterValidCookies(cookies: any[]): any[] {
+  const nowSeconds = Date.now() / 1000;
+  return cookies.filter((cookie) => {
+    if (!cookie || typeof cookie !== 'object') return false;
+    const expires = (cookie as { expires?: unknown }).expires;
+    return typeof expires !== 'number' || expires <= 0 || expires > nowSeconds;
+  });
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getCachedCookies(providerId: string): any[] {
-  if (_cookiesCache.has(providerId)) return _cookiesCache.get(providerId)!;
   const cookiesFile = cookiesPath(providerId);
+  if (_cookiesCache.has(providerId)) {
+    const valid = filterValidCookies(_cookiesCache.get(providerId)!);
+    if (valid.length > 0) {
+      _cookiesCache.set(providerId, valid);
+      return valid;
+    }
+    _cookiesCache.delete(providerId);
+    if (fs.existsSync(cookiesFile)) fs.unlinkSync(cookiesFile);
+    return [];
+  }
   if (!fs.existsSync(cookiesFile)) return [];
   try {
     const raw = fs.readFileSync(cookiesFile, 'utf-8');
     const arr = decryptCookies(raw, providerId);
     if (!Array.isArray(arr) || arr.length === 0) return [];
-    _cookiesCache.set(providerId, arr);
-    return arr;
+    const valid = filterValidCookies(arr);
+    if (valid.length === 0) {
+      fs.unlinkSync(cookiesFile);
+      _cookiesCache.delete(providerId);
+      return [];
+    }
+    _cookiesCache.set(providerId, valid);
+    return valid;
   } catch {
     return [];
   }
@@ -109,31 +140,31 @@ function canOpenVisibleBrowser(): boolean {
 }
 
 async function getChromiumExecutablePath(): Promise<string | undefined> {
-  // Windows: let puppeteer-extra auto-detect; no explicit path needed.
-  if (process.platform === 'win32') return undefined;
-
   // Respect an explicit override from the environment.
   const envPath = process.env.PUPPETEER_EXECUTABLE_PATH || process.env.CHROME_PATH;
   if (envPath && fs.existsSync(envPath)) return envPath;
 
   // Try bundled Chromium from the installed full `puppeteer` package.
   try {
-    const puppeteer = (await import('puppeteer')) as any;
-    const execPath =
-      typeof puppeteer?.default?.executablePath === 'function'
-        ? puppeteer.default.executablePath()
-        : typeof puppeteer?.executablePath === 'function'
-        ? puppeteer.executablePath()
-        : undefined;
-    if (execPath && fs.existsSync(execPath)) return execPath;
+    const execPath = await getPuppeteerBrowserPath();
+    if (execPath) return execPath;
   } catch {
     // puppeteer not installed or browser not yet downloaded
   }
 
   // Known system Chrome/Chromium paths.
   const home = os.homedir();
-  const systemPaths: string[] =
-    process.platform === 'darwin'
+  const systemPaths: string[] = process.platform === 'win32'
+    ? [
+        path.join(process.env.LOCALAPPDATA ?? '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+        path.join(process.env.LOCALAPPDATA ?? '', 'Chromium', 'Application', 'chrome.exe'),
+        path.join(process.env.LOCALAPPDATA ?? '', 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'),
+        path.join(process.env.PROGRAMFILES ?? '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+        path.join(process.env.PROGRAMFILES ?? '', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+        path.join(process.env['PROGRAMFILES(X86)'] ?? '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+        path.join(process.env['PROGRAMFILES(X86)'] ?? '', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+      ]
+    : process.platform === 'darwin'
       ? [
           // System-wide installs (most common)
           '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -166,7 +197,7 @@ async function getChromiumExecutablePath(): Promise<string | undefined> {
     if (fs.existsSync(p)) return p;
   }
 
-  return undefined;
+  return findChromiumInCache();
 }
 
 // Recursively search a directory for a Chrome/Chromium executable.
@@ -198,92 +229,42 @@ function searchForExecutable(dir: string, names: Set<string>, maxDepth: number):
 }
 
 function findChromiumInCache(): string | undefined {
-  const cacheDir = path.join(os.homedir(), '.cache', 'puppeteer');
+  const cacheDir = process.env.PUPPETEER_CACHE_DIR || path.join(os.homedir(), '.cache', 'puppeteer');
   const names = new Set(
-    process.platform === 'darwin'
+    process.platform === 'win32'
+      ? ['chrome.exe', 'chromium.exe']
+      : process.platform === 'darwin'
       ? ['Google Chrome for Testing', 'Google Chrome', 'Chromium', 'chromium', 'chrome']
       : ['chrome', 'chromium', 'google-chrome', 'google-chrome-stable'],
   );
   return searchForExecutable(cacheDir, names, 10);
 }
 
-// Run puppeteer's own browser-install CLI to force a Chrome download.
-// This is a second attempt in case the npm postinstall script didn't complete the download.
-async function runPuppeteerBrowserInstall(onStatus?: (msg: string) => void, signal?: AbortSignal): Promise<void> {
-  try {
-    signal?.throwIfAborted();
-    const { fileURLToPath } = await import('node:url');
-    const here = fileURLToPath(import.meta.url);
-    const toolDir = path.resolve(path.dirname(here), '..', '..');
-    const puppeteerBin = path.join(toolDir, 'node_modules', '.bin', process.platform === 'win32' ? 'puppeteer.cmd' : 'puppeteer');
-    if (!fs.existsSync(puppeteerBin)) return;
-
-    onStatus?.('Running puppeteer browser install...');
-    await new Promise<void>((resolve, reject) => {
-      let settled = false;
-      let abortTimer: ReturnType<typeof setTimeout> | undefined;
-      let cancelForceKill: (() => void) | undefined;
-      const child = spawn(puppeteerBin, ['browsers', 'install', 'chrome'], {
-        env: { ...process.env },
-        stdio: ['ignore', 'pipe', 'pipe'],
-        shell: process.platform === 'win32',
-        detached: process.platform !== 'win32',
-      });
-      const cleanup = () => {
-        signal?.removeEventListener('abort', onAbort);
-        if (abortTimer) clearTimeout(abortTimer);
-        cancelForceKill?.();
-      };
-      const onAbort = () => {
-        cancelForceKill = terminateProcessTree(child.pid);
-        abortTimer = setTimeout(() => {
-          if (settled) return;
-          settled = true;
-          reject(signal?.reason);
-        }, 2_000);
-      };
-      if (signal?.aborted) onAbort();
-      else signal?.addEventListener('abort', onAbort, { once: true });
-      child.stdout?.on('data', (d: Buffer) => {
-        const line = d.toString().trim();
-        if (line) onStatus?.(line);
-      });
-      child.on('close', () => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        if (signal?.aborted) reject(signal.reason);
-        else resolve();
-      });
-      child.on('error', (err) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        if (signal?.aborted) reject(signal.reason);
-        else resolve();
-      });
-    });
-  } catch {
-    signal?.throwIfAborted();
-  }
-}
-
 async function launchBrowser(headless: boolean, onStatus?: (msg: string) => void, signal?: AbortSignal): Promise<any> {
   signal?.throwIfAborted();
-  if (!isPuppeteerInstalled()) {
+  if (!(await isPuppeteerUsable())) {
     throw new Error(
       'Puppeteer not installed — browser fallback requires it. ' +
       'Press p → select a provider to install Puppeteer and authenticate.',
     );
   }
 
-  const puppeteerExtra = (await import('puppeteer-extra')).default as any;
+  const { puppeteerExtra, StealthPlugin } = await loadPuppeteerModules();
   signal?.throwIfAborted();
   if (!_stealthPluginRegistered) {
-    const StealthPlugin = (await import('puppeteer-extra-plugin-stealth')).default as any;
     puppeteerExtra.use(StealthPlugin());
     _stealthPluginRegistered = true;
   }
+  const launch = async (options: Record<string, unknown>): Promise<any> => {
+    signal?.throwIfAborted();
+    // puppeteer-extra deep-merges options, which corrupts AbortSignal into a plain object.
+    const browser = await puppeteerExtra.launch(options);
+    if (signal?.aborted) {
+      await safeClose(browser);
+      signal.throwIfAborted();
+    }
+    return browser;
+  };
 
   const args: string[] = [];
   if (process.platform === 'linux') {
@@ -294,14 +275,14 @@ async function launchBrowser(headless: boolean, onStatus?: (msg: string) => void
   signal?.throwIfAborted();
 
   if (executablePath) {
-    return puppeteerExtra.launch({ headless, args, defaultViewport: null, executablePath, signal });
+    return launch({ headless, args, defaultViewport: null, executablePath });
   }
 
   // Try puppeteer-extra's built-in detection (works on Windows when Chrome is in Program Files,
   // and may work on macOS/Linux too). On failure, fall through to auto-download.
   if (process.platform === 'win32') {
     try {
-      return await puppeteerExtra.launch({ headless, args, defaultViewport: null, signal });
+      return await launch({ headless, args, defaultViewport: null });
     } catch { signal?.throwIfAborted(); }
   }
 
@@ -309,38 +290,32 @@ async function launchBrowser(headless: boolean, onStatus?: (msg: string) => void
   const channels = ['chrome', 'chromium', 'chrome-canary'] as const;
   for (const channel of channels) {
     try {
-      return await puppeteerExtra.launch({ headless, args, defaultViewport: null, channel, signal });
+      return await launch({ headless, args, defaultViewport: null, channel });
     } catch {
       signal?.throwIfAborted();
       // try next channel
     }
   }
 
-  // Still nothing — automatically install puppeteer + download Chromium.
+  // Still nothing: repair only the missing runtime component.
   onStatus?.('No browser found. Downloading Chromium (one-time, may take a minute)...');
   try {
-    const { installPuppeteer } = await import('./deps.js');
-    const installed = await installPuppeteer(undefined, signal);
-    if (installed) {
-      // puppeteer's npm postinstall downloads Chrome, but it can silently fail.
-      // Run the puppeteer browser-install CLI as a second explicit download attempt.
-      await runPuppeteerBrowserInstall(onStatus, signal);
-    }
+    await installPuppeteer(onStatus, signal);
   } catch { signal?.throwIfAborted(); }
 
   // After the install attempt, try every detection path including the cache search.
-  executablePath = (await getChromiumExecutablePath()) ?? findChromiumInCache();
+  executablePath = await getChromiumExecutablePath();
   signal?.throwIfAborted();
 
   if (executablePath) {
     onStatus?.('Browser ready.');
-    return puppeteerExtra.launch({ headless, args, defaultViewport: null, executablePath, signal });
+    return launch({ headless, args, defaultViewport: null, executablePath });
   }
 
   // Last resort: channel detection again (in case the install added Chrome to a known location).
   for (const channel of channels) {
     try {
-      return await puppeteerExtra.launch({ headless, args, defaultViewport: null, channel, signal });
+      return await launch({ headless, args, defaultViewport: null, channel });
     } catch { signal?.throwIfAborted(); }
   }
 
@@ -700,8 +675,16 @@ export async function authenticate(
               txt.includes('微信扫码');
             const hasUsageMarkers =
               txt.includes('usage') ||
+              txt.includes('quota') ||
               txt.includes('rate limit') ||
+              txt.includes('token') ||
+              txt.includes('request') ||
+              txt.includes('credit') ||
+              txt.includes('allowance') ||
+              txt.includes('capacity') ||
+              txt.includes('daily') ||
               txt.includes('weekly') ||
+              txt.includes('monthly') ||
               txt.includes('5h') ||
               txt.includes('codex') ||
               txt.includes('用量') ||

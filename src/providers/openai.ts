@@ -2,11 +2,11 @@ import type { ProviderConnector, ProviderScrapeOptions, ProviderUsageData } from
 import { getSupportedProvider } from '../config/providers.js';
 import { hasCookies, deleteCookies, authenticate, createScrapePageForProvider } from './browser.js';
 import { loadProviderSession } from './session.js';
-import { fetchOpenAIUsageApi } from './openai-api.js';
+import { fetchOpenAIUsageApi, parseOpenAIUsage } from './openai-api.js';
 import { getFallbackMode, shouldFallbackToBrowser } from './fallback-policy.js';
 import { ProviderScrapeError, toProviderScrapeError } from './errors.js';
 import { recordScrapeMetric } from './metrics.js';
-import { clampPct, formatDateShort } from './format-utils.js';
+import { extractUsageLimits } from './usage-limits.js';
 
 type WhamUsageResponse = {
   rate_limit?: {
@@ -76,12 +76,19 @@ export class OpenAIConnector implements ProviderConnector {
 
       if (shouldFallbackToBrowser(mapped.code, getFallbackMode())) {
         const fbStart = Date.now();
-        const fb = await this.scrapeUsageHeadlessApi(signal);
-        signal?.throwIfAborted();
+        let fb: ProviderUsageData;
+        try {
+          fb = await this.scrapeUsageHeadlessApi(signal);
+          signal?.throwIfAborted();
+        } catch (fallbackError) {
+          if (mapped.code === 'unauthorized') deleteCookies(this.id);
+          throw fallbackError;
+        }
         fb.source = 'browser-fallback';
         fb.durationMs = Date.now() - fbStart;
         if (fb.error) {
           fb.errorCode ??= mapped.code;
+          if (mapped.code === 'unauthorized' || fb.errorCode === 'unauthorized') deleteCookies(this.id);
           recordScrapeMetric({ providerId: this.id, mode, source: 'browser-fallback', durationMs: fb.durationMs, success: false, errorCode: fb.errorCode, at: Date.now() });
         } else {
           recordScrapeMetric({ providerId: this.id, mode, source: 'browser-fallback', durationMs: fb.durationMs, success: true, at: Date.now() });
@@ -89,6 +96,7 @@ export class OpenAIConnector implements ProviderConnector {
         return fb;
       }
 
+      if (mapped.code === 'unauthorized') deleteCookies(this.id);
       return this.errorRow(mapped, 'api', startedAt);
     }
   }
@@ -190,6 +198,7 @@ export class OpenAIConnector implements ProviderConnector {
       weeklyUsedPct: 0,
       sessionResetDate: '--',
       weeklyResetDate: '--',
+      limits: [],
       scrapedAt: Date.now(),
       error: err.message,
       errorCode: err.code,
@@ -199,62 +208,11 @@ export class OpenAIConnector implements ProviderConnector {
   }
 
   private parseUsageFromApi(data: WhamUsageResponse): ProviderUsageData {
-    const primary = data.rate_limit?.primary_window;
-    const secondary = data.rate_limit?.secondary_window;
-
-    const sessionPct = this.clampPct(primary?.used_percent ?? 0);
-    const weeklyPct = this.clampPct(secondary?.used_percent ?? 0);
-
-    const sessionReset = this.formatReset(primary?.reset_at, primary?.reset_after_seconds);
-    const weeklyReset = this.formatReset(secondary?.reset_at, secondary?.reset_after_seconds);
-
-    const parseFailed = sessionPct === 0 && weeklyPct === 0 && sessionReset === '--' && weeklyReset === '--';
-
-    return {
-      providerId: this.id,
-      providerLabel: this.label,
-      color: this.color,
-      sessionUsedPct: sessionPct,
-      weeklyUsedPct: weeklyPct,
-      sessionResetDate: sessionReset,
-      weeklyResetDate: weeklyReset,
-      scrapedAt: Date.now(),
-      error: parseFailed ? 'Could not parse wham usage API response' : undefined,
-    };
+    return parseOpenAIUsage(data);
   }
 
   private isValidWhamUsageResponse(data: WhamUsageResponse): boolean {
-    if (!data || typeof data !== 'object') return false;
-    const rl = data.rate_limit;
-    if (!rl || typeof rl !== 'object') return false;
-
-    const p = rl.primary_window;
-    const s = rl.secondary_window;
-    const hasPrimary = !!p &&
-      typeof p === 'object' &&
-      Number.isFinite(p.used_percent as number) &&
-      (Number.isFinite(p.reset_at as number) || Number.isFinite(p.reset_after_seconds as number));
-
-    const hasSecondary = !!s &&
-      typeof s === 'object' &&
-      Number.isFinite(s.used_percent as number) &&
-      (Number.isFinite(s.reset_at as number) || Number.isFinite(s.reset_after_seconds as number));
-
-    return hasPrimary || hasSecondary;
-  }
-
-  private clampPct(value: number): number {
-    return clampPct(value);
-  }
-
-  private formatReset(resetAtEpochSec?: number, resetAfterSec?: number): string {
-    if (Number.isFinite(resetAtEpochSec as number) && (resetAtEpochSec as number) > 0) {
-      return formatDateShort(new Date((resetAtEpochSec as number) * 1000));
-    }
-    if (Number.isFinite(resetAfterSec as number) && (resetAfterSec as number) > 0) {
-      return formatDateShort(new Date(Date.now() + (resetAfterSec as number) * 1000));
-    }
-    return '--';
+    return extractUsageLimits(data, { aliases: { primary_window: 'Primary window', secondary_window: 'Secondary window' } }).length > 0;
   }
 
   removeConfig(): void {

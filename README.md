@@ -54,13 +54,11 @@ For each provider, `agwatch` shows:
 - Provider name
 - Data source: `api` or `browser-fallback`
 - Scrape time
-- Current `5h` usage percentage
-- `5h` reset time/date
-- Current weekly usage percentage
-- Weekly reset time/date
-- Current monthly usage percentage (when available)
-- Monthly reset time/date (when available)
+- Every usage or quota limit returned by the provider
+- The provider's label, usage percentage, and reset time/date for each limit
 - Provider-specific error state when usage could not be fetched
+
+Limit rows are dynamic. Providers may expose only a weekly limit, only a rolling/session limit, or additional daily/monthly/model limits. `agwatch` renders the limits found in the trusted usage API response or usage-page cards instead of fabricating missing rows. Newly returned limits appear without an agwatch code update.
 
 Supported providers currently include:
 
@@ -280,7 +278,9 @@ Provider configuration is handled from inside the dashboard.
 4. Authenticate in the browser flow.
 5. Return to the dashboard to view provider usage.
 
-If browser automation dependencies are missing, `agwatch` prompts to install them during setup.
+If browser automation dependencies are missing, `agwatch` prompts to install them during setup. The optional runtime is stored at `~/.config/agwatch/browser-runtime` (or under `$XDG_CONFIG_HOME`) so it survives agwatch npm upgrades and is reused for every provider and re-authentication. Puppeteer's Chrome for Testing download uses its standard cross-platform cache and is downloaded only when its expected executable is missing.
+
+When cookies expire or a provider rejects the saved session, agwatch clears that session and offers re-authentication. An already installed browser runtime is detected and reused; the installation prompt appears only when the runtime is actually unavailable or incomplete.
 
 Provider usage is fetched live on dashboard startup and provider refresh. Usage results are not persisted in a provider cache; authentication cookies and the separate model-pricing cache are persisted as described below.
 

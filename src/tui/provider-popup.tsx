@@ -3,9 +3,9 @@ import { Box, Text, useInput } from 'ink';
 import { SUPPORTED_PROVIDERS } from '../config/providers.js';
 import { loadConfig, saveConfig } from '../config/agents.js';
 import { getConnector } from '../providers/registry.js';
-import { isPuppeteerInstalled, installPuppeteer } from '../providers/deps.js';
+import { isPuppeteerUsable, installPuppeteer } from '../providers/deps.js';
 
-type PopupState = 'menu' | 'installing' | 'authenticating' | 'confirm_delete' | 'install_prompt';
+type PopupState = 'menu' | 'checking' | 'installing' | 'authenticating' | 'confirm_delete' | 'install_prompt';
 
 type MenuItem = {
   id: string;
@@ -135,7 +135,8 @@ export function ProviderPopup({ onClose, onProviderChanged, onQuit, width }: {
   });
 
   async function handleConfigure(providerId: string) {
-    if (!isPuppeteerInstalled()) {
+    setState('checking');
+    if (!(await isPuppeteerUsable())) {
       setPendingInstall(providerId);
       setState('install_prompt');
       return;
@@ -302,6 +303,12 @@ export function ProviderPopup({ onClose, onProviderChanged, onQuit, width }: {
           {installLog.slice(-6).map((line, i) => (
             <Text key={i} color="#999999">{line}</Text>
           ))}
+        </Box>
+      )}
+
+      {state === 'checking' && (
+        <Box marginTop={1}>
+          <Text color="#5BE0F5">Checking browser runtime...</Text>
         </Box>
       )}
 

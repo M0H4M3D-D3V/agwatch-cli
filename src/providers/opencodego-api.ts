@@ -3,7 +3,9 @@ import type { ProviderSession } from './session.js';
 import { httpRequest } from './http-client.js';
 import { ProviderScrapeError } from './errors.js';
 import { CHROME_UA } from './constants.js';
-import { clampPct, formatDateShort } from './format-utils.js';
+import type { ProviderUsageLimit } from './types.js';
+import { clampPct } from './format-utils.js';
+import { extractUsageLimits, legacyFieldsFromLimits } from './usage-limits.js';
 
 type GoUsageWindow = {
   status?: string;
@@ -15,6 +17,7 @@ type GoSubscriptionData = {
   rollingUsage?: GoUsageWindow;
   weeklyUsage?: GoUsageWindow;
   monthlyUsage?: GoUsageWindow;
+  [key: string]: GoUsageWindow | undefined;
 };
 
 export async function fetchOpenCodeGoUsageApi(
@@ -76,12 +79,42 @@ export async function fetchOpenCodeGoUsageApi(
     );
   }
 
-  const data = extractEmbeddedUsageData(html);
-  if (!data) {
-    return parseUsageFromPageText(html);
-  }
+  return parseOpenCodeGoUsageHtml(html);
+}
 
-  return mapUsageData(data);
+export function parseOpenCodeGoUsageHtml(html: string): ProviderUsageData {
+  const data = extractEmbeddedUsageData(html);
+  const embedded = data ? mapUsageData(data) : undefined;
+  const pageText = parseUsageFromPageText(html);
+  const limits = mergeUsageLimits([...(embedded?.limits ?? []), ...(pageText.limits ?? [])]);
+  if (limits.length === 0) {
+    throw new ProviderScrapeError('payload_invalid', 'Could not parse OpenCode Go usage data', true);
+  }
+  return {
+    providerId: 'opencodego',
+    providerLabel: 'OpenCode Go',
+    color: '#FF8C42',
+    ...legacyFieldsFromLimits(limits),
+    limits,
+    scrapedAt: Date.now(),
+  };
+}
+
+function mergeUsageLimits(limits: ProviderUsageLimit[]): ProviderUsageLimit[] {
+  const merged: ProviderUsageLimit[] = [];
+  for (const limit of limits) {
+    const key = limit.label.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+    const duplicate = merged.find((entry) =>
+      entry.label.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_') === key
+      && entry.usedPercent === limit.usedPercent,
+    );
+    if (!duplicate) merged.push(limit);
+    else if (duplicate.resetDate === '--' && limit.resetDate !== '--') {
+      duplicate.resetDate = limit.resetDate;
+      duplicate.resetAt = limit.resetAt;
+    }
+  }
+  return merged;
 }
 
 async function discoverWorkspaceId(
@@ -126,6 +159,9 @@ async function discoverWorkspaceId(
         'user-agent': CHROME_UA,
       },
     });
+    if (fallbackRes.status === 401 || fallbackRes.status === 403) {
+      throw new ProviderScrapeError('unauthorized', `OpenCode Go workspaces unauthorized (${fallbackRes.status})`, false);
+    }
     if (Array.isArray(fallbackRes.json) && fallbackRes.json.length > 0 && fallbackRes.json[0]?.id) {
       return fallbackRes.json[0].id;
     }
@@ -139,103 +175,69 @@ async function discoverWorkspaceId(
 }
 
 function extractEmbeddedUsageData(html: string): GoSubscriptionData | null {
-  const rollingMatch = html.match(/rollingUsage:\$R\[\d+\]=\{.*?resetInSec:(\d+).*?usagePercent:([\d.]+)/);
-  const weeklyMatch = html.match(/weeklyUsage:\$R\[\d+\]=\{.*?resetInSec:(\d+).*?usagePercent:([\d.]+)/);
-  const monthlyMatch = html.match(/monthlyUsage:\$R\[\d+\]=\{.*?resetInSec:(\d+).*?usagePercent:([\d.]+)/);
-
-  if (!rollingMatch && !weeklyMatch && !monthlyMatch) return null;
-
-  return {
-    rollingUsage: rollingMatch ? {
+  const result: GoSubscriptionData = {};
+  const pattern = /["']?([A-Za-z][A-Za-z0-9_]*(?:Usage|Limit|Quota))["']?\s*:\s*\$R\[\d+\]\s*=\s*\{([^}]{0,1200})\}/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(html)) !== null) {
+    const usagePercent = match[2].match(/["']?usagePercent["']?\s*:\s*["']?([\d.]+)/)?.[1];
+    if (!usagePercent) continue;
+    const resetInSec = match[2].match(/["']?resetInSec["']?\s*:\s*["']?(\d+)/)?.[1];
+    result[match[1]] = {
       status: 'ok',
-      resetInSec: parseInt(rollingMatch[1], 10),
-      usagePercent: parseFloat(rollingMatch[2]),
-    } : undefined,
-    weeklyUsage: weeklyMatch ? {
-      status: 'ok',
-      resetInSec: parseInt(weeklyMatch[1], 10),
-      usagePercent: parseFloat(weeklyMatch[2]),
-    } : undefined,
-    monthlyUsage: monthlyMatch ? {
-      status: 'ok',
-      resetInSec: parseInt(monthlyMatch[1], 10),
-      usagePercent: parseFloat(monthlyMatch[2]),
-    } : undefined,
-  };
+      resetInSec: resetInSec ? Number.parseInt(resetInSec, 10) : undefined,
+      usagePercent: Number.parseFloat(usagePercent),
+    };
+  }
+  return Object.keys(result).length > 0 ? result : null;
 }
 
 function parseUsageFromPageText(html: string): ProviderUsageData {
   const text = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
-
-  let sessionPct = 0;
-  let weeklyPct = 0;
-  let monthlyPct = 0;
-  let sessionReset = '--';
-  let weeklyReset = '--';
-  let monthlyReset = '--';
-
-  const rollingMatch = text.match(/Rolling Usage\s*([\d.]+)\s*%/i);
-  const weeklyMatch = text.match(/Weekly Usage\s*([\d.]+)\s*%/i);
-  const monthlyMatch = text.match(/Monthly Usage\s*([\d.]+)\s*%/i);
-
-  if (rollingMatch) sessionPct = clampPct(parseFloat(rollingMatch[1]));
-  if (weeklyMatch) weeklyPct = clampPct(parseFloat(weeklyMatch[1]));
-  if (monthlyMatch) monthlyPct = clampPct(parseFloat(monthlyMatch[1]));
-
-  const rollingResetMatch = text.match(/Rolling Usage[\s\S]*?Resets in\s*([\d]+\s*(?:hours?|minutes?|days?)(?:\s*[\d]+\s*(?:hours?|minutes?|days?))*)/i);
-  const weeklyResetMatch = text.match(/Weekly Usage[\s\S]*?Resets in\s*([\d]+\s*(?:hours?|minutes?|days?)(?:\s*[\d]+\s*(?:hours?|minutes?|days?))*)/i);
-  const monthlyResetMatch = text.match(/Monthly Usage[\s\S]*?Resets in\s*([\d]+\s*(?:hours?|minutes?|days?)(?:\s*[\d]+\s*(?:hours?|minutes?|days?))*)/i);
-
-  if (rollingResetMatch) sessionReset = rollingResetMatch[1].trim();
-  if (weeklyResetMatch) weeklyReset = weeklyResetMatch[1].trim();
-  if (monthlyResetMatch) monthlyReset = monthlyResetMatch[1].trim();
-
-  const parseFailed = sessionPct === 0 && weeklyPct === 0 && monthlyPct === 0 &&
-    sessionReset === '--' && weeklyReset === '--' && monthlyReset === '--';
+  const limits: ProviderUsageLimit[] = [];
+  const pattern = /([A-Za-z0-9][A-Za-z0-9 -]{1,50}(?:Usage|Limit))\s*([\d.]+)\s*%/gi;
+  const matches = [...text.matchAll(pattern)].map((match) => {
+    const rawLabel = match[1].trim();
+    const withoutPreviousReset = rawLabel
+      .replace(/^.*\bResets?\s+in\s+\d+(?:\.\d+)?\s*(?:seconds?|minutes?|hours?|days?|weeks?|months?)\s+/i, '');
+    const label = withoutPreviousReset.replace(/^.*\b(?:subscription|dashboard|overview|plan)\s+/i, '').trim();
+    const labelOffset = Math.max(0, rawLabel.lastIndexOf(label));
+    return { match, label, start: (match.index ?? 0) + labelOffset };
+  });
+  for (let index = 0; index < matches.length; index++) {
+    const { match, label } = matches[index];
+    const nextIndex = matches[index + 1]?.start ?? text.length;
+    const following = text.slice((match.index ?? 0) + match[0].length, nextIndex);
+    const reset = following.match(/Resets? in\s*(\d+(?:\.\d+)?\s*(?:seconds?|minutes?|hours?|days?|weeks?|months?))/i)?.[1]?.trim() ?? '--';
+    const id = label;
+    const usedPercent = clampPct(Number.parseFloat(match[2]));
+    const duplicate = limits.find((limit) =>
+      limit.label.toLowerCase() === label.toLowerCase() && limit.usedPercent === usedPercent,
+    );
+    if (!duplicate) limits.push({ id, label, usedPercent, resetDate: reset });
+    else if (duplicate.resetDate === '--' && reset !== '--') duplicate.resetDate = reset;
+  }
 
   return {
     providerId: 'opencodego',
     providerLabel: 'OpenCode Go',
     color: '#FF8C42',
-    sessionUsedPct: sessionPct,
-    weeklyUsedPct: weeklyPct,
-    sessionResetDate: sessionReset,
-    weeklyResetDate: weeklyReset,
-    monthlyUsedPct: monthlyPct,
-    monthlyResetDate: monthlyReset,
+    ...legacyFieldsFromLimits(limits),
+    limits,
     scrapedAt: Date.now(),
-    error: parseFailed ? 'Could not parse OpenCode Go usage from page HTML' : undefined,
   };
 }
 
 function mapUsageData(data: GoSubscriptionData): ProviderUsageData {
-  const sessionUsedPct = clampPct(data.rollingUsage?.usagePercent ?? 0);
-  const weeklyUsedPct = clampPct(data.weeklyUsage?.usagePercent ?? 0);
-  const monthlyUsedPct = clampPct(data.monthlyUsage?.usagePercent ?? 0);
-
-  const sessionResetDate = formatResetFromSec(data.rollingUsage?.resetInSec);
-  const weeklyResetDate = formatResetFromSec(data.weeklyUsage?.resetInSec);
-  const monthlyResetDate = formatResetFromSec(data.monthlyUsage?.resetInSec);
-
-  const parseFailed = sessionUsedPct === 0 && weeklyUsedPct === 0 && monthlyUsedPct === 0 &&
-    sessionResetDate === '--' && weeklyResetDate === '--' && monthlyResetDate === '--';
+  const limits = extractUsageLimits(data, {
+    aliases: { rollingUsage: 'Rolling usage', weeklyUsage: 'Weekly', monthlyUsage: 'Monthly' },
+  });
 
   return {
     providerId: 'opencodego',
     providerLabel: 'OpenCode Go',
     color: '#FF8C42',
-    sessionUsedPct,
-    weeklyUsedPct,
-    sessionResetDate,
-    weeklyResetDate,
-    monthlyUsedPct,
-    monthlyResetDate,
+    ...legacyFieldsFromLimits(limits),
+    limits,
     scrapedAt: Date.now(),
-    error: parseFailed ? 'Could not parse OpenCode Go usage data' : undefined,
   };
-}
-
-function formatResetFromSec(sec?: number): string {
-  if (sec == null || !Number.isFinite(sec) || sec <= 0) return '--';
-  return formatDateShort(new Date(Date.now() + sec * 1000));
 }

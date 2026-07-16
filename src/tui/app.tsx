@@ -11,6 +11,7 @@ import { forceRefreshProviders, refreshProvidersBackgroundOnly } from '../servic
 import type { ProviderUsageData } from '../providers/types.js';
 import { closeBrowser, releaseBrowserHandles } from '../providers/browser.js';
 import { ProviderPopup } from './provider-popup.js';
+import { getProviderLimits } from '../providers/usage-limits.js';
 
 let fastQuitRequested = false;
 
@@ -572,11 +573,13 @@ function ProvidersPanel({ width, providers, loading, loadingText, spinner, statu
   const totalSep = SEP * (N_COLS - 1);
   const baseColW = Math.floor((iw - totalSep) / N_COLS);
   const lastColW = iw - totalSep - baseColW * (N_COLS - 1);
-  const LABEL_W = 3;
+  const limitsByProvider = providers.map(getProviderLimits);
+  const LABEL_W = Math.min(12, Math.max(3, ...limitsByProvider.flat().map((limit) => limit.label.length)));
   const BAR_PCT_GAP_W = 1;
   const PCT_W = 4;
   const GAP_W = 1;
   const RESET_W = 21;
+  const stacked = baseColW < LABEL_W + BAR_PCT_GAP_W + PCT_W + GAP_W + RESET_W + 4;
 
   function colData(pct: number, cw: number) {
     const bw = Math.max(4, cw - LABEL_W - BAR_PCT_GAP_W - PCT_W - GAP_W - RESET_W);
@@ -586,13 +589,9 @@ function ProvidersPanel({ width, providers, loading, loadingText, spinner, statu
 
   const items = providers.map((p, i) => {
     const cw = i === N_COLS - 1 ? lastColW : baseColW;
-    const d5h = colData(p.sessionUsedPct, cw);
-    const dWk = colData(p.weeklyUsedPct, cw);
-    const hasMo = p.monthlyUsedPct != null;
-    const dMo = colData(hasMo ? p.monthlyUsedPct! : 0, cw);
-    return { p, cw, ...d5h, segsWk: dWk.segs, segsMo: dMo.segs, hasMo };
+    return { p, cw, limits: limitsByProvider[i] };
   });
-  const anyHasMo = items.some((item) => item.hasMo);
+  const maxLimitRows = Math.max(0, ...items.map((item) => item.limits.length));
 
   function BarRow({ segs, label, pct, reset }: {
     segs: { str: string; color: string }[];
@@ -646,6 +645,17 @@ function ProvidersPanel({ width, providers, loading, loadingText, spinner, statu
           </>
         ) : null}
       </Box>
+      {stacked ? items.map((item) => (
+        <Box key={item.p.providerId} flexDirection="column" paddingX={1} marginTop={1}>
+          <Text bold color={item.p.color}>
+            {fitL(`${item.p.providerLabel} (${item.p.source ?? '--'} · ${item.p.scrapedAt > 0 ? formatScrapedTime(item.p.scrapedAt) : '--'})`, iw)}
+          </Text>
+          {item.limits.map((limit, index) => {
+            const { segs } = colData(limit.usedPercent, iw);
+            return <BarRow key={limit.id ?? `${limit.label}-${index}`} segs={segs} label={limit.label} pct={limit.usedPercent} reset={limit.resetDate} />;
+          })}
+        </Box>
+      )) : <>
       {(() => {
         const segments: Array<{ text: string; color: string; bold: boolean }> = [];
         for (let i = 0; i < items.length; i++) {
@@ -670,15 +680,15 @@ function ProvidersPanel({ width, providers, loading, loadingText, spinner, statu
           </Box>
         );
       })()}
-      <FullRow renderCell={(item) => <BarRow segs={item.segs} label="5h" pct={item.p.sessionUsedPct} reset={item.p.sessionResetDate} />} />
-      <FullRow renderCell={(item) => <BarRow segs={item.segsWk} label="Wk" pct={item.p.weeklyUsedPct} reset={item.p.weeklyResetDate} />} />
-      {anyHasMo ? (
-        <FullRow renderCell={(item) =>
-          item.hasMo
-            ? <BarRow segs={item.segsMo} label="Mo" pct={item.p.monthlyUsedPct!} reset={item.p.monthlyResetDate!} />
-            : <Box width={item.cw} />
-        } />
-      ) : null}
+      {Array.from({ length: maxLimitRows }, (_, rowIndex) => (
+        <FullRow key={rowIndex} renderCell={(item) => {
+          const limit = item.limits[rowIndex];
+          if (!limit) return <Box width={item.cw} />;
+          const { segs } = colData(limit.usedPercent, item.cw);
+          return <BarRow segs={segs} label={limit.label} pct={limit.usedPercent} reset={limit.resetDate} />;
+        }} />
+      ))}
+      </>}
     </Box>
   );
 }
@@ -976,7 +986,9 @@ function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refres
   const [resizeMode, setResizeMode] = useState<DashboardResizeMode>(initialResizeMode);
   const reloadGeneration = useRef(0);
   const providerGeneration = useRef(0);
-  const providerCount = useRef(initialProviders.length);
+  const providerDataRef = useRef(initialProviders);
+  const dashboardDataRef = useRef(initialData);
+  const resizeModeRef = useRef(initialResizeMode);
 
   const providerSpinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -998,8 +1010,9 @@ function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refres
     try {
       const d = await loadDataForRange(p, agent === 'all' ? undefined : agent);
       if (generation !== reloadGeneration.current) return;
+      dashboardDataRef.current = d;
       setData(d);
-      if (resizeMode === 'auto') resizeTerminalForData(d, providers.length);
+      if (resizeMode === 'auto') resizeTerminalForData(d, providerDataRef.current);
     } finally {
       if (generation === reloadGeneration.current) setLoading(false);
     }
@@ -1039,9 +1052,10 @@ function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refres
     try {
       const rows = await refreshProvidersBackgroundOnly();
       if (generation !== providerGeneration.current) return;
-      providerCount.current = rows.length;
+      providerDataRef.current = rows;
       setProviders(rows);
       setProviderStatusFromRows(rows);
+      if (resizeModeRef.current === 'auto') resizeTerminalForData(dashboardDataRef.current, rows);
     } finally {
       if (generation === providerGeneration.current) endProvidersLoading();
     }
@@ -1055,9 +1069,10 @@ function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refres
     try {
       const rows = await forceRefreshProviders();
       if (generation !== providerGeneration.current) return;
-      providerCount.current = rows.length;
+      providerDataRef.current = rows;
       setProviders(rows);
       setProviderStatusFromRows(rows);
+      if (resizeModeRef.current === 'auto') resizeTerminalForData(dashboardDataRef.current, rows);
     } finally {
       if (generation === providerGeneration.current) endProvidersLoading();
     }
@@ -1120,8 +1135,9 @@ function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refres
       await refreshPricing();
       const d = await loadDataForRange(period, activeAgent === 'all' ? undefined : activeAgent);
       if (generation !== reloadGeneration.current) return;
+      dashboardDataRef.current = d;
       setData(d);
-      if (resizeMode === 'auto') resizeTerminalForData(d, providers.length);
+      if (resizeMode === 'auto') resizeTerminalForData(d, providerDataRef.current);
     } finally {
       if (generation === reloadGeneration.current) setLoading(false);
     }
@@ -1145,13 +1161,14 @@ function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refres
         forceRefreshProviders(),
       ]);
       if (providerRequest === providerGeneration.current) {
-        providerCount.current = p.length;
+        providerDataRef.current = p;
         setProviders(p);
         setProviderStatusFromRows(p);
       }
       if (generation === reloadGeneration.current) {
+        dashboardDataRef.current = d;
         setData(d);
-        if (resizeMode === 'auto') resizeTerminalForData(d, providerCount.current);
+        if (resizeMode === 'auto') resizeTerminalForData(d, providerDataRef.current);
       }
     } finally {
       if (generation === reloadGeneration.current) setLoading(false);
@@ -1169,6 +1186,7 @@ function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refres
   ]);
 
   const applyResizeMode = useCallback((next: DashboardResizeMode) => {
+    resizeModeRef.current = next;
     setResizeMode(next);
     setShowLayoutPopup(false);
 
@@ -1176,7 +1194,7 @@ function InteractiveDashboard({ initialData, initialPeriod, initialAgent, refres
     config.dashboard = { ...(config.dashboard ?? { resizeMode: 'auto' }), resizeMode: next };
     saveConfig(config);
 
-    if (next === 'auto') resizeTerminalForData(data, providers.length);
+    if (next === 'auto') resizeTerminalForData(data, providerDataRef.current);
     else restoreTerminal();
   }, [data, providers.length]);
 
@@ -1329,12 +1347,13 @@ function tablePanelHeight(rows: number, limit: number): number {
   return 4 + Math.min(rows, limit);
 }
 
-function desiredDashboardHeight(data: DashboardData, providerCount: number): number {
+function desiredDashboardHeight(data: DashboardData, providerData: ProviderUsageData[]): number {
   // period tabs (1) + agent tabs (1) + status bar (3: border + content + border)
   const chrome = 5;
 
   // Providers panel: 2 borders + title + names row + up to 3 bar rows (5h, Wk, Mo).
-  const providers = providerCount > 0 ? 8 : 4;
+  const providerRows = Math.max(0, ...providerData.map((provider) => getProviderLimits(provider).length));
+  const providers = providerData.length > 0 ? 5 + providerRows : 4;
 
   // Empty state keeps provider status visible above one "No usage data" panel.
   if (data.summary.totalCalls === 0) {
@@ -1375,9 +1394,9 @@ function resizeTerminalTo(height: number, width: number): void {
   lastAppliedWidth = width;
 }
 
-function resizeTerminalForData(data: DashboardData, providerCount: number, resizeMode: DashboardResizeMode = 'auto'): void {
+function resizeTerminalForData(data: DashboardData, providerData: ProviderUsageData[], resizeMode: DashboardResizeMode = 'auto'): void {
   if (resizeMode !== 'auto') return;
-  resizeTerminalTo(desiredDashboardHeight(data, providerCount), TARGET_DASHBOARD_WIDTH);
+  resizeTerminalTo(desiredDashboardHeight(data, providerData), TARGET_DASHBOARD_WIDTH);
 }
 
 export async function runInkDashboard(
@@ -1404,16 +1423,13 @@ export async function runInkDashboard(
           weeklyUsedPct: 0,
           sessionResetDate: '--',
           weeklyResetDate: '--',
+          limits: [],
           scrapedAt: 0,
         };
-        if (p.id === 'opencodego') {
-          base.monthlyUsedPct = 0;
-          base.monthlyResetDate = '--';
-        }
         return base;
       });
       const resizeMode = config.dashboard.resizeMode;
-      resizeTerminalForData(data, providerData.length, resizeMode);
+      resizeTerminalForData(data, providerData, resizeMode);
       const { waitUntilExit } = render(
         <InteractiveDashboard
           initialData={data}

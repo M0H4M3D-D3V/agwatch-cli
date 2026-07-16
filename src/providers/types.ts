@@ -1,3 +1,11 @@
+export type ProviderUsageLimit = {
+  id?: string;
+  label: string;
+  usedPercent: number;
+  resetDate: string;
+  resetAt?: number;
+};
+
 export type ProviderUsageData = {
   providerId: string;
   providerLabel: string;
@@ -8,6 +16,7 @@ export type ProviderUsageData = {
   weeklyResetDate: string;
   monthlyUsedPct?: number;
   monthlyResetDate?: string;
+  limits: ProviderUsageLimit[];
   scrapedAt: number;
   error?: string;
   errorCode?:

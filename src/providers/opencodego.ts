@@ -6,7 +6,8 @@ import { fetchOpenCodeGoUsageApi } from './opencodego-api.js';
 import { getFallbackMode, shouldFallbackToBrowser } from './fallback-policy.js';
 import { ProviderScrapeError, toProviderScrapeError } from './errors.js';
 import { recordScrapeMetric } from './metrics.js';
-import { clampPct, formatDateShort } from './format-utils.js';
+import { legacyFieldsFromLimits } from './usage-limits.js';
+import { extractUsageLimitsFromPage } from './dom-usage-limits.js';
 
 export class OpenCodeGoConnector implements ProviderConnector {
   readonly id = 'opencodego';
@@ -61,12 +62,19 @@ export class OpenCodeGoConnector implements ProviderConnector {
 
       if (shouldFallbackToBrowser(mapped.code, getFallbackMode())) {
         const fbStart = Date.now();
-        const fb = await this.scrapeUsageBrowserFallback(signal);
-        signal?.throwIfAborted();
+        let fb: ProviderUsageData;
+        try {
+          fb = await this.scrapeUsageBrowserFallback(signal);
+          signal?.throwIfAborted();
+        } catch (fallbackError) {
+          if (mapped.code === 'unauthorized') deleteCookies(this.id);
+          throw fallbackError;
+        }
         fb.source = 'browser-fallback';
         fb.durationMs = Date.now() - fbStart;
         if (fb.error) {
           fb.errorCode = fb.errorCode ?? 'unknown';
+          if (mapped.code === 'unauthorized' || fb.errorCode === 'unauthorized') deleteCookies(this.id);
           recordScrapeMetric({ providerId: this.id, mode, source: 'browser-fallback', durationMs: fb.durationMs, success: false, errorCode: fb.errorCode, at: Date.now() });
         } else {
           recordScrapeMetric({ providerId: this.id, mode, source: 'browser-fallback', durationMs: fb.durationMs, success: true, at: Date.now() });
@@ -74,6 +82,7 @@ export class OpenCodeGoConnector implements ProviderConnector {
         return fb;
       }
 
+      if (mapped.code === 'unauthorized') deleteCookies(this.id);
       return this.errorRow(mapped, 'api', startedAt);
     }
   }
@@ -110,64 +119,21 @@ export class OpenCodeGoConnector implements ProviderConnector {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private async parseDomUsage(page: any, signal?: AbortSignal): Promise<ProviderUsageData> {
     try {
-      const extracted = await page.evaluate(() => {
-        const txt = (document.body?.innerText ?? '') || '';
-
-        const rollingMatch = txt.match(/Rolling Usage\s*([\d.]+)\s*%/i);
-        const weeklyMatch = txt.match(/Weekly Usage\s*([\d.]+)\s*%/i);
-        const monthlyMatch = txt.match(/Monthly Usage\s*([\d.]+)\s*%/i);
-
-        const rollingResetMatch = txt.match(/Rolling Usage[\s\S]*?Resets in\s*([\d]+\s*(?:hours?|minutes?|days?)(?:\s*[\d]+\s*(?:hours?|minutes?|days?))*)/i);
-        const weeklyResetMatch = txt.match(/Weekly Usage[\s\S]*?Resets in\s*([\d]+\s*(?:hours?|minutes?|days?)(?:\s*[\d]+\s*(?:hours?|minutes?|days?))*)/i);
-        const monthlyResetMatch = txt.match(/Monthly Usage[\s\S]*?Resets in\s*([\d]+\s*(?:hours?|minutes?|days?)(?:\s*[\d]+\s*(?:hours?|minutes?|days?))*)/i);
-
-        const hasGoContent =
-          txt.includes('Rolling Usage') ||
-          txt.includes('Weekly Usage') ||
-          txt.includes('Monthly Usage') ||
-          txt.includes('OpenCode Go');
-
-        return {
-          hasGoContent,
-          sessionPct: rollingMatch ? parseFloat(rollingMatch[1]) : 0,
-          weeklyPct: weeklyMatch ? parseFloat(weeklyMatch[1]) : 0,
-          monthlyPct: monthlyMatch ? parseFloat(monthlyMatch[1]) : 0,
-          sessionReset: rollingResetMatch ? rollingResetMatch[1].trim() : '',
-          weeklyReset: weeklyResetMatch ? weeklyResetMatch[1].trim() : '',
-          monthlyReset: monthlyResetMatch ? monthlyResetMatch[1].trim() : '',
-        };
-      });
-      signal?.throwIfAborted();
-
-      if (!extracted.hasGoContent) {
+      const limits = await extractUsageLimitsFromPage(page, signal);
+      if (limits.length === 0) {
         return this.errorRow(
-          new ProviderScrapeError('unauthorized', 'Go usage page content not found — may need re-authentication', false),
+          new ProviderScrapeError('payload_invalid', 'No usage limits were found on the OpenCode Go page', true),
           'browser-fallback',
         );
       }
-
-      const sessionPct = clampPct(extracted.sessionPct);
-      const weeklyPct = clampPct(extracted.weeklyPct);
-      const monthlyPct = clampPct(extracted.monthlyPct);
-      const sessionReset = extracted.sessionReset || '--';
-      const weeklyReset = extracted.weeklyReset || '--';
-      const monthlyReset = extracted.monthlyReset || '--';
-
-      const parseFailed = sessionPct === 0 && weeklyPct === 0 && monthlyPct === 0 &&
-        sessionReset === '--' && weeklyReset === '--' && monthlyReset === '--';
 
       return {
         providerId: this.id,
         providerLabel: this.label,
         color: this.color,
-        sessionUsedPct: sessionPct,
-        weeklyUsedPct: weeklyPct,
-        sessionResetDate: sessionReset,
-        weeklyResetDate: weeklyReset,
-        monthlyUsedPct: monthlyPct,
-        monthlyResetDate: monthlyReset,
+        ...legacyFieldsFromLimits(limits),
+        limits,
         scrapedAt: Date.now(),
-        error: parseFailed ? 'Could not extract usage from page DOM' : undefined,
       };
     } catch (err) {
       signal?.throwIfAborted();
@@ -185,6 +151,7 @@ export class OpenCodeGoConnector implements ProviderConnector {
       weeklyUsedPct: 0,
       sessionResetDate: '--',
       weeklyResetDate: '--',
+      limits: [],
       scrapedAt: Date.now(),
       error: mapped.message,
       errorCode: mapped.code,

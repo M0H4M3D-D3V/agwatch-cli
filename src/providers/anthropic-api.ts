@@ -1,57 +1,64 @@
 import type { ProviderUsageData } from './types.js';
 import type { ProviderSession } from './session.js';
+import { setTimeout as delay } from 'node:timers/promises';
 import { httpRequest } from './http-client.js';
+import type { HttpResponse } from './http-client.js';
 import { ProviderScrapeError } from './errors.js';
 import { CHROME_UA } from './constants.js';
-import { clampPct, formatDateShort } from './format-utils.js';
+import { extractUsageLimits, legacyFieldsFromLimits } from './usage-limits.js';
 
 type AnthropicOrg = {
   uuid?: string;
   id?: string;
 };
 
-type LimitBlock = {
-  utilization?: number;
-  resets_at?: string | null;
-};
-
 type RawUsageResponse = Record<string, any>;
 
-export function parseAnthropicUsage(raw: RawUsageResponse): ProviderUsageData {
-  const fiveHour = raw['five_hour'] as LimitBlock | undefined;
-  const sevenDay = raw['seven_day'] as LimitBlock | undefined;
+async function requestWithRetry<T>(
+  request: (timeoutMs: number) => Promise<HttpResponse<T>>,
+  deadline: number,
+  signal?: AbortSignal,
+): Promise<HttpResponse<T>> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    signal?.throwIfAborted();
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new ProviderScrapeError('timeout', 'Anthropic API deadline exceeded', true);
+    try {
+      const response = await request(Math.max(250, Math.min(6_000, remaining)));
+      if (response.status !== 429 && response.status < 500) return response;
+      lastError = new ProviderScrapeError('network_error', `Anthropic request failed (${response.status})`, true);
+      if (attempt === 1) return response;
+    } catch (err) {
+      signal?.throwIfAborted();
+      lastError = err;
+      if (attempt === 1) throw err;
+    }
+    const retryDelay = Math.min(250, Math.max(0, deadline - Date.now()));
+    if (retryDelay > 0) await delay(retryDelay, undefined, { signal });
+  }
+  throw lastError;
+}
 
+export function parseAnthropicUsage(raw: RawUsageResponse): ProviderUsageData {
+  const limits = extractUsageLimits(raw, {
+    aliases: { five_hour: '5 hours', seven_day: '7 days' },
+  });
+  if (limits.length === 0) {
+    throw new ProviderScrapeError('payload_invalid', 'Anthropic usage payload invalid', true);
+  }
   return {
     providerId: 'anthropic',
     providerLabel: 'Anthropic',
     color: '#C77DFF',
-    sessionUsedPct: toPct(fiveHour?.utilization),
-    weeklyUsedPct: toPct(sevenDay?.utilization),
-    sessionResetDate: formatIsoReset(fiveHour?.resets_at ?? null),
-    weeklyResetDate: formatIsoReset(sevenDay?.resets_at ?? null),
+    ...legacyFieldsFromLimits(limits),
+    limits,
     scrapedAt: Date.now(),
   };
 }
 
 function isValidUsagePayload(raw: RawUsageResponse | undefined): boolean {
-  if (!raw || typeof raw !== 'object') return false;
-
-  const fiveHour = raw['five_hour'];
-  const sevenDay = raw['seven_day'];
-
-  const hasFiveHour = !!fiveHour &&
-    typeof fiveHour === 'object' &&
-    typeof fiveHour.utilization === 'number' &&
-    typeof fiveHour.resets_at === 'string';
-
-  const hasSevenDay = !!sevenDay &&
-    typeof sevenDay === 'object' &&
-    typeof sevenDay.utilization === 'number' &&
-    typeof sevenDay.resets_at === 'string';
-
-  if (hasFiveHour || hasSevenDay) return true;
-
-  return false;
+  return extractUsageLimits(raw, { aliases: { five_hour: '5 hours', seven_day: '7 days' } }).length > 0;
 }
 
 export async function fetchAnthropicUsageApi(
@@ -59,18 +66,24 @@ export async function fetchAnthropicUsageApi(
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<ProviderUsageData> {
-  const orgsRes = await httpRequest<AnthropicOrg[]>({
-    url: 'https://claude.ai/api/organizations',
-    timeoutMs,
-    signal,
-    headers: {
+  const deadline = Date.now() + timeoutMs;
+  const headers = {
       'accept': 'application/json, text/plain, */*',
       'cookie': session.cookieHeader,
       'origin': 'https://claude.ai',
       'referer': 'https://claude.ai/settings/usage',
       'user-agent': CHROME_UA,
-    },
-  });
+  };
+  const orgsRes = await requestWithRetry<AnthropicOrg[]>(
+    (requestTimeoutMs) => httpRequest({
+      url: 'https://claude.ai/api/organizations',
+      timeoutMs: requestTimeoutMs,
+      signal,
+      headers,
+    }),
+    deadline,
+    signal,
+  );
 
   if (orgsRes.status === 401 || orgsRes.status === 403) {
     throw new ProviderScrapeError('unauthorized', `Anthropic organizations unauthorized (${orgsRes.status})`, false);
@@ -79,50 +92,44 @@ export async function fetchAnthropicUsageApi(
     throw new ProviderScrapeError('network_error', `Anthropic organizations request failed (${orgsRes.status})`, true);
   }
 
-  const orgs = Array.isArray(orgsRes.json) ? orgsRes.json : [];
-  const orgId = (orgs.find((o) => !!o?.uuid)?.uuid) || (orgs.find((o) => !!o?.id)?.id);
-  if (!orgId) {
+  const orgIds = [...new Set(
+    (Array.isArray(orgsRes.json) ? orgsRes.json : [])
+      .map((org) => org?.uuid || org?.id)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0),
+  )];
+  if (orgIds.length === 0) {
     throw new ProviderScrapeError('payload_invalid', 'Anthropic organization id not found', true);
   }
 
-  const usageRes = await httpRequest<RawUsageResponse>({
-    url: `https://claude.ai/api/organizations/${orgId}/usage`,
-    timeoutMs,
-    signal,
-    headers: {
-      'accept': 'application/json, text/plain, */*',
-      'cookie': session.cookieHeader,
-      'origin': 'https://claude.ai',
-      'referer': 'https://claude.ai/settings/usage',
-      'user-agent': CHROME_UA,
-    },
-  });
-
-  if (usageRes.status === 401 || usageRes.status === 403) {
-    throw new ProviderScrapeError('unauthorized', `Anthropic usage unauthorized (${usageRes.status})`, false);
+  let lastFailure: ProviderScrapeError | undefined;
+  for (const orgId of orgIds) {
+    const usageRes = await requestWithRetry<RawUsageResponse>(
+      (requestTimeoutMs) => httpRequest({
+        url: `https://claude.ai/api/organizations/${orgId}/usage`,
+        timeoutMs: requestTimeoutMs,
+        signal,
+        headers,
+      }),
+      deadline,
+      signal,
+    );
+    if (usageRes.status === 401 || usageRes.status === 403) {
+      lastFailure = new ProviderScrapeError('unauthorized', `Anthropic usage unauthorized (${usageRes.status})`, false);
+      continue;
+    }
+    if (usageRes.status === 404) {
+      lastFailure = new ProviderScrapeError('endpoint_not_found', 'Anthropic usage endpoint not found', false);
+      continue;
+    }
+    if (!usageRes.ok) {
+      lastFailure = new ProviderScrapeError('network_error', `Anthropic usage request failed (${usageRes.status})`, true);
+      continue;
+    }
+    if (!isValidUsagePayload(usageRes.json)) {
+      lastFailure = new ProviderScrapeError('payload_invalid', 'Anthropic usage payload invalid', true);
+      continue;
+    }
+    return parseAnthropicUsage(usageRes.json!);
   }
-  if (usageRes.status === 404) {
-    throw new ProviderScrapeError('endpoint_not_found', 'Anthropic usage endpoint not found', false);
-  }
-  if (!usageRes.ok) {
-    throw new ProviderScrapeError('network_error', `Anthropic usage request failed (${usageRes.status})`, true);
-  }
-
-  const data = usageRes.json;
-  if (!isValidUsagePayload(data)) {
-    throw new ProviderScrapeError('payload_invalid', 'Anthropic usage payload invalid', true);
-  }
-
-  return parseAnthropicUsage(data!);
-}
-
-function toPct(utilization: number | null | undefined): number {
-  return clampPct(utilization ?? 0);
-}
-
-function formatIsoReset(value: string | null): string {
-  if (!value) return '--';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return '--';
-  return formatDateShort(parsed);
+  throw lastFailure ?? new ProviderScrapeError('payload_invalid', 'Anthropic usage payload invalid', true);
 }
